@@ -357,14 +357,18 @@ share most of their words, the near-duplicate count exceeds the planted one.
 | Dataset | Records in | Kept | Runs | Wall-clock | Throughput |
 | --- | --- | --- | --- | --- | --- |
 | `examples/sft-demo.yaml`, validate + dedup only | 299 | 220 | 3 | 0.060-0.065 s | 4,600-5,000 records/s |
-| `examples/sft-demo.yaml` with the ledger stage (re-run) | 299 | 220 | 3 | 0.08 s | 3,500-3,700 records/s |
+| `examples/sft-demo.yaml` with the ledger stage (re-run) | 299 | 220 | 6 | 0.08-0.09 s | 3,300-3,700 records/s |
 | 22k templated SFT records, validate + dedup (not bundled) | 22,000 | 18,512 | 3 | 4.0-5.7 s | 3,800-5,500 records/s |
 
-The ledger stage itself takes 9-10 ms for the demo's 220 records by the log timestamps (about
-22,000 records/s including the SQLite commit and fsync); the first run over a fresh ledger and a
-re-run cost the same. `make demo` end to end (including interpreter start-up) takes 0.54-0.59 s
-(`/usr/bin/time -p`, 3 runs). The 22k runs overlapped a Docker image build on the same machine,
-hence the spread. Full test suite: 686 tests in about 16 s with coverage, 86% line coverage
+The 9-10 ms the ledger stage takes for the demo's 220 records by the log timestamps
+(`dedup.finished` to `ledger.finished`, about 22,000 records/s including the SQLite commit and
+fsync) is the stage loop only; the first run over a fresh ledger and a re-run cost the same. The
+pipeline-level cost of the stage is the gap between the two demo rows, 15-30 ms, because it also
+pays the SQLite import, the digest of the input bytes and the connection open plus schema check.
+`make demo` end to end (including interpreter start-up) takes 0.59-0.74 s (`/usr/bin/time -p`,
+6 runs); a second machine under load measured every number here about 1.5x slower, so treat them
+as an idle-machine floor. The 22k runs overlapped a Docker image build on the same machine, hence
+the spread. Full test suite: 688 tests in about 17 s with coverage, 86% line coverage
 (`make test`).
 
 ## What I would do next
