@@ -13,11 +13,16 @@ Example (YAML)::
       - stage: validate
         unknown_fields: metadata  # reject (default) | metadata
         max_invalid_fraction: 0.2 # fail the run if more than 20% of records are quarantined
+      - stage: dedup
+        near:
+          threshold: 0.8          # Jaccard similarity of word n-grams that makes a near duplicate
+        reference:
+          path: data/eval.jsonl   # drop records that match this set (contamination)
 
 Unknown keys are errors everywhere, so a typo such as ``max_invalid_fracton``
 fails loudly instead of silently using a default. Duplicate keys are errors in
 every format. ``stages`` is a list of entries tagged by ``stage``; later stage
-types (dedup, PII, quality, ...) join the :data:`StageSpec` union.
+types (PII, quality, ...) join the :data:`StageSpec` union.
 """
 
 from __future__ import annotations
@@ -43,9 +48,12 @@ from pydantic import ValidationInfo
 from pydantic import model_validator
 from pydantic_core import PydanticCustomError
 
+from curator.dedup.text import HashAlgorithm
 from curator.errors import SpecError
 from curator.io.jsonl import StrictJSONError
 from curator.io.jsonl import loads_strict
+from curator.schemas.fields import TEXT_FIELDS
+from curator.schemas.fields import TextField
 from curator.schemas.issues import issue_from_error
 from curator.schemas.parse import RecordKind
 from curator.schemas.parse import UnknownFieldPolicy
@@ -120,7 +128,99 @@ class ValidateStageSpec(SpecModel):
         return self
 
 
-StageSpec = Annotated[ValidateStageSpec, Field(discriminator="stage")]
+def _unique_fields(fields: list[TextField]) -> list[TextField]:
+    if len(set(fields)) != len(fields):
+        raise PydanticCustomError("duplicate_field", "each field may be listed once, got {fields}", {"fields": fields})
+    return fields
+
+
+TextFields = Annotated[list[TextField], Field(min_length=1), AfterValidator(_unique_fields)]
+"""Which text fields of a record to compare, in order (see :data:`curator.schemas.fields.TEXT_FIELDS`)."""
+
+
+class NormalizeSpec(SpecModel):
+    """How text is canonicalised before exact matching."""
+
+    lowercase: bool = True
+    collapse_whitespace: bool = True
+    strip_punctuation: bool = False
+    """Drop Unicode punctuation and symbols, so ``Hello, world!`` equals ``hello world``."""
+
+
+class NearDuplicateSpec(SpecModel):
+    """MinHash/LSH near-duplicate detection over word n-grams."""
+
+    enabled: bool = True
+    num_perm: Annotated[int, Field(ge=16, le=1024)] = 128
+    """Signature length; more permutations make the LSH candidate step more accurate but slower."""
+
+    ngram_size: Annotated[int, Field(ge=1, le=16)] = 3
+    """Words per shingle."""
+
+    threshold: Annotated[float, Field(gt=0.0, le=1.0)] = 0.8
+    """Jaccard similarity of two records' shingle sets at or above which the later one is a duplicate."""
+
+    seed: int = 42
+    """Seed of the MinHash permutations; the same seed always gives the same clusters."""
+
+
+class ReferenceSpec(SpecModel):
+    """A set the input must not overlap with, typically an evaluation set (contamination check)."""
+
+    path: SpecPath
+    """JSONL; lines are records of the pipeline's kind, or plain objects with the text fields as strings."""
+
+    fields: TextFields | None = None
+    """Fields compared between input and reference records. Defaults to the stage's ``fields``."""
+
+    threshold: Annotated[float, Field(gt=0.0, le=1.0)] | None = None
+    """Near-match threshold against the reference. Defaults to ``near.threshold``."""
+
+
+class DedupStageSpec(SpecModel):
+    """Exact and near-duplicate removal (keep-first), plus an optional contamination check.
+
+    Kept records go to ``output_file``, dropped ones to ``rejects_file`` with
+    their reason, and ``clusters_file`` lists each group of duplicates.
+    """
+
+    stage: Literal["dedup"] = "dedup"
+
+    fields: TextFields | None = None
+    """Text fields that make up a record's content. Defaults to every text field of the record kind."""
+
+    normalize: NormalizeSpec = NormalizeSpec()
+    hash: HashAlgorithm = "xxhash"
+    """Hash of the normalised text used for exact matching."""
+
+    near: NearDuplicateSpec = NearDuplicateSpec()
+    reference: ReferenceSpec | None = None
+
+    output_file: FileName = "deduped.jsonl"
+    rejects_file: FileName = "dedup_rejects.jsonl"
+    clusters_file: FileName = "dedup_clusters.jsonl"
+
+    @model_validator(mode="after")
+    def _distinct_files(self) -> Self:
+        names = [self.output_file, self.rejects_file, self.clusters_file]
+        if len(set(names)) != len(names):
+            raise PydanticCustomError(
+                "same_file", "output_file, rejects_file and clusters_file must be different files"
+            )
+        return self
+
+    def fields_for(self, kind: RecordKind) -> tuple[TextField, ...]:
+        """The fields compared for duplicates: ``fields``, or every text field of ``kind``."""
+        return tuple(self.fields) if self.fields is not None else TEXT_FIELDS[kind]
+
+    def reference_fields_for(self, kind: RecordKind) -> tuple[TextField, ...]:
+        """The fields compared against the reference set: ``reference.fields``, else :meth:`fields_for`."""
+        if self.reference is not None and self.reference.fields is not None:
+            return tuple(self.reference.fields)
+        return self.fields_for(kind)
+
+
+StageSpec = Annotated[ValidateStageSpec | DedupStageSpec, Field(discriminator="stage")]
 """One entry of ``stages``, selected by its ``stage`` key."""
 
 
@@ -148,7 +248,47 @@ class PipelineSpec(SpecModel):
             raise PydanticCustomError(
                 "duplicate_stage", "each stage may appear once; repeated: {stages}", {"stages": ", ".join(duplicates)}
             )
+        for stage in self.stages:
+            if isinstance(stage, DedupStageSpec):
+                self._check_text_fields(stage)
+        self._check_distinct_files()
         return self
+
+    def _check_distinct_files(self) -> None:
+        # Each stage reads the previous stage's output, so two stages writing the same file
+        # would clobber the pipeline's own intermediate data.
+        writers: dict[str, str] = {}
+        for index, stage in enumerate(self.stages):
+            for name, value in stage:
+                if not name.endswith("_file"):
+                    continue
+                where = f"stages[{index}].{name}"
+                if value in writers:
+                    raise PydanticCustomError(
+                        "same_file",
+                        "{where} and {other} both write '{file}'; every stage output needs its own file",
+                        {"where": where, "other": writers[value], "file": value},
+                    )
+                writers[value] = where
+
+    def _check_text_fields(self, stage: DedupStageSpec) -> None:
+        allowed = TEXT_FIELDS[self.input.kind]
+        for where, fields in (
+            ("fields", stage.fields),
+            ("reference.fields", stage.reference and stage.reference.fields),
+        ):
+            unknown = [field for field in fields or () if field not in allowed]
+            if unknown:
+                raise PydanticCustomError(
+                    "unknown_text_field",
+                    "{where} lists {unknown}, but {kind} records only have {allowed}",
+                    {
+                        "where": where,
+                        "unknown": ", ".join(unknown),
+                        "kind": self.input.kind,
+                        "allowed": ", ".join(allowed),
+                    },
+                )
 
     def output_dir(self, work_dir: Path) -> Path:
         """The run's output directory: ``output.dir`` if set, else ``<work_dir>/<name>``."""
@@ -256,11 +396,16 @@ def load_spec(path: str | Path) -> PipelineSpec:
 __all__ = [
     "SPEC_SUFFIXES",
     "SPEC_VERSION",
+    "DedupStageSpec",
     "InputSpec",
+    "NearDuplicateSpec",
+    "NormalizeSpec",
     "OutputSpec",
     "PipelineSpec",
+    "ReferenceSpec",
     "SpecModel",
     "StageSpec",
+    "TextFields",
     "ValidateStageSpec",
     "load_spec",
     "parse_spec",

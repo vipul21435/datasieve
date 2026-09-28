@@ -7,7 +7,11 @@ from typing import Any
 
 import pytest
 
+from curator.config import DedupStageSpec
+from curator.config import NearDuplicateSpec
+from curator.config import NormalizeSpec
 from curator.config import PipelineSpec
+from curator.config import ReferenceSpec
 from curator.config import ValidateStageSpec
 from curator.config import load_spec
 from curator.config import parse_spec
@@ -222,3 +226,156 @@ def test_non_utf8_spec_file(tmp_path: Path) -> None:
 def test_model_can_be_built_in_code() -> None:
     spec = PipelineSpec.model_validate(MINIMAL)
     assert spec == parse_spec(MINIMAL)
+
+
+# ---------------------------------------------------------------------------
+# dedup stage
+
+DEDUP_YAML = """\
+version: 1
+name: dedup-demo
+input:
+  path: data/train.jsonl
+  kind: sft
+stages:
+  - stage: validate
+  - stage: dedup
+    fields: [prompt]
+    normalize:
+      strip_punctuation: true
+    hash: sha256
+    near:
+      num_perm: 64
+      ngram_size: 2
+      threshold: 0.6
+      seed: 7
+    reference:
+      path: data/eval.jsonl
+      threshold: 0.5
+    output_file: kept.jsonl
+    rejects_file: dropped.jsonl
+    clusters_file: groups.jsonl
+"""
+
+
+def with_dedup(stage: dict[str, Any], kind: str = "sft") -> dict[str, Any]:
+    return MINIMAL | {
+        "input": {"path": "in.jsonl", "kind": kind},
+        "stages": [{"stage": "validate"}, stage | {"stage": "dedup"}],
+    }
+
+
+def test_dedup_stage_defaults() -> None:
+    _, stage = parse_spec(with_dedup({})).stages
+
+    assert stage == DedupStageSpec()
+    assert isinstance(stage, DedupStageSpec)
+    assert stage.fields is None
+    assert stage.normalize == NormalizeSpec(lowercase=True, collapse_whitespace=True, strip_punctuation=False)
+    assert stage.hash == "xxhash"
+    assert stage.near == NearDuplicateSpec(enabled=True, num_perm=128, ngram_size=3, threshold=0.8, seed=42)
+    assert stage.reference is None
+    assert (stage.output_file, stage.rejects_file, stage.clusters_file) == (
+        "deduped.jsonl",
+        "dedup_rejects.jsonl",
+        "dedup_clusters.jsonl",
+    )
+
+
+def test_dedup_fields_default_to_every_text_field_of_the_kind() -> None:
+    stage = DedupStageSpec()
+    assert stage.fields_for("sft") == ("prompt", "response")
+    assert stage.fields_for("preference") == ("prompt", "chosen", "rejected")
+    assert stage.reference_fields_for("preference") == ("prompt", "chosen", "rejected")
+
+    explicit = DedupStageSpec(fields=["response", "prompt"], reference=ReferenceSpec(path=Path("e.jsonl")))
+    assert explicit.fields_for("sft") == ("response", "prompt")  # order as listed
+    assert explicit.reference_fields_for("sft") == ("response", "prompt")  # falls back to fields
+
+    narrowed = DedupStageSpec(reference=ReferenceSpec(path=Path("e.jsonl"), fields=["prompt"]))
+    assert narrowed.reference_fields_for("sft") == ("prompt",)
+    assert narrowed.fields_for("sft") == ("prompt", "response")
+
+
+def test_dedup_stage_from_yaml_with_every_option(tmp_path: Path) -> None:
+    spec = load_spec(write(tmp_path / "specs", "p.yaml", DEDUP_YAML))
+    _, stage = spec.stages
+
+    assert isinstance(stage, DedupStageSpec)
+    assert stage.fields == ["prompt"]
+    assert stage.normalize.strip_punctuation is True
+    assert stage.hash == "sha256"
+    assert stage.near == NearDuplicateSpec(num_perm=64, ngram_size=2, threshold=0.6, seed=7)
+    assert stage.reference is not None
+    assert stage.reference.path == tmp_path / "specs" / "data" / "eval.jsonl"  # resolved like input.path
+    assert (stage.reference.fields, stage.reference.threshold) == (None, 0.5)
+    assert (stage.output_file, stage.rejects_file, stage.clusters_file) == (
+        "kept.jsonl",
+        "dropped.jsonl",
+        "groups.jsonl",
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [
+        ({"near": {"threshold": 0}}, "stages[1].near.threshold: Input should be greater than 0 [greater_than]"),
+        ({"near": {"threshold": 1.5}}, "stages[1].near.threshold: Input should be less than or equal to 1"),
+        ({"near": {"num_perm": 8}}, "stages[1].near.num_perm: Input should be greater than or equal to 16"),
+        ({"near": {"num_perm": 4096}}, "stages[1].near.num_perm: Input should be less than or equal to 1024"),
+        ({"near": {"ngram_size": 0}}, "stages[1].near.ngram_size: Input should be greater than or equal to 1"),
+        ({"near": {"seed": "x"}}, "stages[1].near.seed: Input should be a valid integer"),
+        ({"near": {"threshhold": 0.9}}, "stages[1].near.threshhold: Extra inputs are not permitted"),
+        ({"reference": {"path": "e.jsonl", "threshold": 0}}, "stages[1].reference.threshold: Input should be greater"),
+        ({"reference": {"path": "e.jsonl", "threshold": 2}}, "stages[1].reference.threshold: Input should be less"),
+        ({"reference": {}}, "stages[1].reference.path: Field required [missing]"),
+        ({"reference": {"path": "e.jsonl", "fields": ["prompt", "prompt"]}}, "[duplicate_field]"),
+        ({"fields": ["prompt", "prompt"]}, "stages[1].fields: each field may be listed once, got ['prompt', 'prompt']"),
+        ({"fields": []}, "stages[1].fields: List should have at least 1 item"),
+        ({"fields": ["text"]}, "stages[1].fields[0]: Input should be 'prompt', 'response', 'chosen' or 'rejected'"),
+        (
+            {"fields": ["chosen"]},
+            "fields lists chosen, but sft records only have prompt, response [unknown_text_field]",
+        ),
+        (
+            {"reference": {"path": "e.jsonl", "fields": ["rejected"]}},
+            "reference.fields lists rejected, but sft records",
+        ),
+        ({"hash": "md5"}, "stages[1].hash: Input should be 'xxhash' or 'sha256'"),
+        ({"normalize": {"lowercase": "maybe"}}, "stages[1].normalize.lowercase: Input should be a valid boolean"),
+        ({"normalize": {"casefold": True}}, "stages[1].normalize.casefold: Extra inputs are not permitted"),
+        ({"output_file": "sub/deduped.jsonl"}, "stages[1].output_file: must be a plain file name"),
+        (
+            {"rejects_file": "deduped.jsonl"},
+            "stages[1]: output_file, rejects_file and clusters_file must be different files [same_file]",
+        ),
+        ({"clusters_file": "dedup_rejects.jsonl"}, "must be different files [same_file]"),
+        (
+            {"output_file": "validated.jsonl"},
+            "stages[1].output_file and stages[0].output_file both write 'validated.jsonl'; every stage output needs its own file [same_file]",
+        ),
+        ({"clusters_file": "quarantine.jsonl"}, "stages[1].clusters_file and stages[0].quarantine_file both write"),
+    ],
+)
+def test_invalid_dedup_stages_name_the_offending_field(stage: dict[str, Any], expected: str) -> None:
+    problems = spec_problems(with_dedup(stage))
+    assert any(expected in problem for problem in problems), problems
+
+
+def test_preference_kind_allows_its_own_text_fields() -> None:
+    stage = {"fields": ["chosen", "rejected"], "reference": {"path": "e.jsonl", "fields": ["prompt"]}}
+    _, parsed = parse_spec(with_dedup(stage, kind="preference")).stages
+    assert isinstance(parsed, DedupStageSpec)
+    assert parsed.fields_for("preference") == ("chosen", "rejected")
+    assert parsed.reference_fields_for("preference") == ("prompt",)
+
+
+def test_dedup_cannot_come_before_validate() -> None:
+    problems = spec_problems(MINIMAL | {"stages": [{"stage": "dedup"}, {"stage": "validate"}]})
+    assert any("the first stage must be 'validate'" in problem for problem in problems), problems
+
+
+def test_dedup_stage_is_frozen() -> None:
+    _, stage = parse_spec(with_dedup({})).stages
+    with pytest.raises(ValueError, match="frozen"):
+        stage.hash = "sha256"
