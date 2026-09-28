@@ -13,6 +13,7 @@ import pytest
 from curator.cli import main
 from curator.errors import EX_CONFIG
 from curator.errors import EX_DATAERR
+from curator.errors import EX_NOINPUT
 from curator.log import LOGGER_NAME
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
@@ -121,3 +122,61 @@ def test_module_entry_point(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("sft-demo-300: sft records from ")
+
+
+def write_ledger_spec(tmp_path: Path, name: str, records: list[dict[str, object]]) -> Path:
+    data = tmp_path / f"{name}.jsonl"
+    data.write_text("".join(json.dumps(record) + "\n" for record in records))
+    spec = tmp_path / f"{name}.json"
+    spec.write_text(
+        json.dumps({
+            "version": 1,
+            "name": name,
+            "input": {"path": data.name, "kind": "sft"},
+            "stages": [{"stage": "validate"}, {"stage": "ledger"}],
+        })
+    )
+    return spec
+
+
+def test_ledger_stats_and_collisions_read_the_work_dir_ledger(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    batch_1 = [{"id": "a", "prompt": "One?", "response": "1"}, {"id": "b", "prompt": "Two?", "response": "2"}]
+    batch_2 = [{"id": "a", "prompt": "Uno?", "response": "1"}, {"id": "c", "prompt": "two?", "response": "2"}]
+    first = write_ledger_spec(tmp_path, "batch-1", batch_1)
+    second = write_ledger_spec(tmp_path, "batch-2", batch_2)
+    code, out, err = run_cli("run", str(first), "--work-dir", str(work), "--log-level", "ERROR")
+    assert code == 0, err
+    code, out, err = run_cli("run", str(second), "--work-dir", str(work), "--log-level", "ERROR")
+    assert code == 0, err
+    assert "ledger" in out and "2 in ->      1 out   (1 skipped: seen=1)" in out
+
+    code, out, _ = run_cli("ledger", "stats", "--work-dir", str(work))
+    assert code == 0
+    lines = out.splitlines()
+    assert (
+        lines[0]
+        == f"ledger {work / 'ledger.sqlite'}: 2 runs, 4 records, 3 distinct contents, 3 distinct ids, 2 collisions"
+    )
+    assert lines[1].startswith("  batch-1-") and "2 in ->      2 kept (0 skipped, 0 rerun)" in lines[1]
+    assert lines[2].startswith("  batch-2-") and "2 in ->      1 kept (1 skipped, 0 rerun)" in lines[2]
+
+    code, out, _ = run_cli("ledger", "stats", "--ledger", str(work / "ledger.sqlite"), "--json")
+    assert code == 0 and json.loads(out)["runs"] == 2
+
+    code, out, _ = run_cli("ledger", "collisions", "--work-dir", str(work))
+    assert code == 0
+    assert out.startswith("same id, different content: 1\n  a: ")
+    assert "same content, different ids: 1\n" in out and "b (run batch-1-" in out and "c (run batch-2-" in out
+
+    code, out, _ = run_cli("ledger", "collisions", "--work-dir", str(work), "--json")
+    assert code == 0
+    same_id, same_content = json.loads(out)
+    assert (same_id["kind"], same_id["key"]) == ("same_id", "a")
+    assert same_content["kind"] == "same_content" and [m["id"] for m in same_content["members"]] == ["b", "c"]
+
+
+def test_ledger_commands_fail_with_exit_66_without_a_ledger(tmp_path: Path) -> None:
+    code, out, err = run_cli("ledger", "stats", "--work-dir", str(tmp_path))
+    assert code == EX_NOINPUT and out == ""
+    assert err.startswith("error [input_file_error]: ledger not found: ")

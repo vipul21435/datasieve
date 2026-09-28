@@ -1,4 +1,4 @@
-"""The ``curator`` command line: ``python -m curator run SPEC`` and ``python -m curator check SPEC``.
+"""The ``curator`` command line: ``run SPEC``, ``check SPEC`` and ``ledger stats|collisions``.
 
 ``run`` executes a pipeline spec and prints the stage funnel::
 
@@ -10,6 +10,9 @@
 ``--json`` prints the full report (:meth:`curator.pipeline.PipelineReport.to_dict`
 plus ``elapsed_seconds`` and ``records_per_second``) instead. ``check`` only
 loads the spec and lists its stages, so a typo is caught before a long run.
+``ledger stats`` and ``ledger collisions`` read a run ledger
+(:mod:`curator.ledger`) back: the runs it holds with their counts, and the
+records whose id or content disagree across batches.
 
 Exit codes follow :mod:`curator.errors`: 0 on success, 78 for a bad spec or
 setting, 65/66 for unusable data, 2 for a usage error (argparse).
@@ -23,6 +26,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 from typing import TextIO
 from typing import get_args
 
@@ -31,6 +35,10 @@ from curator.config.settings import load_settings
 from curator.config.spec import PipelineSpec
 from curator.config.spec import load_spec
 from curator.errors import CuratorError
+from curator.ledger import DEFAULT_LEDGER_NAME
+from curator.ledger import Ledger
+from curator.ledger import summarise_collisions
+from curator.ledger import summarise_stats
 from curator.log import LogFormat
 from curator.log import LogLevel
 from curator.log import configure_logging
@@ -59,7 +67,28 @@ def build_parser() -> argparse.ArgumentParser:
         "check", parents=[common], help="load a pipeline spec and list its stages without running it"
     )
     check.add_argument("spec", type=Path, help="pipeline spec (.yaml, .toml or .json)")
+
+    ledger = commands.add_parser("ledger", parents=[common], help="inspect a run ledger: its runs, or collisions")
+    ledger.add_argument("action", choices=get_args(LedgerAction), help="stats: runs and totals; collisions: conflicts")
+    ledger.add_argument("--ledger", type=Path, help=f"ledger file (default: <CURATOR_WORK_DIR>/{DEFAULT_LEDGER_NAME})")
+    ledger.add_argument("--work-dir", type=Path, help="override CURATOR_WORK_DIR (where the default ledger lives)")
+    ledger.add_argument("--json", action="store_true", help="print JSON instead of text")
     return parser
+
+
+LedgerAction = Literal["stats", "collisions"]
+
+
+def ledger_report(action: LedgerAction, path: Path, *, as_json: bool = False) -> str:
+    """What ``ledger stats`` / ``ledger collisions`` print for the ledger at ``path``."""
+    with Ledger.open_existing(path) as ledger:
+        if action == "stats":
+            stats = ledger.stats()
+            return json.dumps(stats, indent=2) if as_json else summarise_stats(stats)
+        collisions = ledger.collisions()
+        if as_json:
+            return json.dumps([collision.to_dict() for collision in collisions], indent=2)
+        return summarise_collisions(collisions)
 
 
 def _stage_line(summary: dict[str, object]) -> str:
@@ -126,6 +155,10 @@ def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None, std
         }
         settings = load_settings(**overrides)
         configure_logging(settings.log_level, settings.log_format, stream=err)
+        if args.command == "ledger":
+            path = args.ledger if args.ledger is not None else settings.work_dir / DEFAULT_LEDGER_NAME
+            print(ledger_report(args.action, path, as_json=args.json), file=out)
+            return 0
         spec = load_spec(args.spec)
         if args.command == "check":
             print(describe_spec(spec), file=out)
@@ -143,4 +176,4 @@ def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None, std
     return 0
 
 
-__all__ = ["build_parser", "describe_spec", "format_funnel", "main", "report_json"]
+__all__ = ["LedgerAction", "build_parser", "describe_spec", "format_funnel", "ledger_report", "main", "report_json"]
