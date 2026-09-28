@@ -1,6 +1,7 @@
 # The `make demo` pipeline: validate a seeded SFT dataset with planted defects,
 # then drop exact duplicates, near duplicates and records that overlap the
-# evaluation split. Regenerate the data with `python examples/make_demo_data.py`.
+# evaluation split, and record what was delivered in the run ledger so a later
+# batch skips it. Regenerate the data with `python examples/make_demo_data.py`.
 version: 1
 name: sft-demo-300
 description: 300-odd SFT records with planted exact, near and contaminated duplicates and invalid rows.
@@ -18,3 +19,5 @@ stages:
       seed: 42
     reference:
       path: data/sft_demo_eval.jsonl
+  - stage: ledger
+    # Defaults to <CURATOR_WORK_DIR>/ledger.sqlite, shared by every pipeline in the work dir.

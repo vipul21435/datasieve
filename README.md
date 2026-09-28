@@ -10,10 +10,11 @@ package is kept intact and reused for MinHash/LSH, and everything the fork adds 
 
 ```text
 $ make demo
-pipeline sft-demo-300: examples/data/sft_demo.jsonl -> .curator/sft-demo-300/deduped.jsonl
+pipeline sft-demo-300: examples/data/sft_demo.jsonl -> .curator/sft-demo-300/unseen.jsonl
   validate      299 in ->    287 out   (12 quarantined: blank_text=2, consecutive_same_role=1, ...)
   dedup         287 in ->    220 out   (67 dropped: contaminated=12, exact_duplicate=30, near_duplicate=25)
-finished in 0.06s (4,648 records/s)
+  ledger        220 in ->    220 out   (0 skipped)
+finished in 0.08s (3,567 records/s)
 ```
 
 ## What I built on top
@@ -34,6 +35,11 @@ Everything below is fork work (`git log --author=vipul21435@iiitd.ac.in`); `src/
   normalised text, near-duplicate clustering with MinHash/LSH (seeded, keep-first, every
   candidate verified with the exact Jaccard similarity) and a contamination check against an
   evaluation split; rejects carry the reason, the matched id and the similarity.
+- **The `ledger` stage and run ledger** (`curator.stages.ledger`, `curator.ledger`): a SQLite file
+  that records every delivered content hash with its run id, spec digest and input; a re-run of
+  the same input is byte-identical, a later batch skips what earlier batches delivered (reported
+  as `seen` with the earlier run id), and `python -m curator ledger stats|collisions` lists the
+  runs and the ids or contents that disagree across batches.
 - **A pipeline runner and CLI** (`curator.pipeline`, `curator.cli`): stages chain through the
   run directory and `python -m curator run` prints the stage funnel or a JSON report.
 - **Structured logging and an error hierarchy** (`curator.log`, `curator.errors`): JSON log lines
@@ -56,13 +62,15 @@ flowchart LR
     LOAD --> RUN["curator.pipeline.run_pipeline"]
     RAW --> V
     subgraph stages [Stages, each reads the previous output]
-        V["validate<br/>curator.schemas"] --> D["dedup<br/>hash + MinHash/LSH"]
+        V["validate<br/>curator.schemas"] --> D["dedup<br/>hash + MinHash/LSH"] --> L["ledger<br/>content hash lookup"]
     end
     RUN --> V
     EVAL --> D
     V -.-> Q["quarantine.jsonl"]
     D -.-> R["dedup_rejects.jsonl<br/>dedup_clusters.jsonl"]
-    D --> OUT["deduped.jsonl"]
+    L <--> DB[("ledger.sqlite<br/>runs + records")]
+    L -.-> S["seen.jsonl"]
+    L --> OUT["unseen.jsonl"]
     D --> TD["text_dedup (upstream)<br/>hashing, n-grams, LSH params"]
     RUN --> REPORT["stage funnel / JSON report<br/>+ JSON logs on stderr"]
 ```
@@ -79,9 +87,11 @@ make demo
 make test
 ```
 
-`make demo` validates and deduplicates the bundled sample (see the output above) and writes the
-kept records, the quarantine file, the rejects and the clusters to `.curator/sft-demo-300/`.
-`make test` runs the 670-odd unit tests and doctests with coverage. `make help` lists the rest
+`make demo` validates and deduplicates the bundled sample (see the output above), writes the
+kept records, the quarantine file, the rejects, the clusters and the ledger's seen report to
+`.curator/sft-demo-300/`, and records the run in `.curator/ledger.sqlite`; run it twice and the
+ledger line reads `220 in -> 220 out` again with every record reported as a re-run.
+`make test` runs the 680-odd unit tests and doctests with coverage. `make help` lists the rest
 (`lint`, `typecheck`, `ci`, `clean`).
 
 ## CLI reference
@@ -89,6 +99,7 @@ kept records, the quarantine file, the rejects and the clusters to `.curator/sft
 ```text
 python -m curator run   SPEC [--work-dir DIR] [--json] [--log-level LEVEL] [--log-format json|text]
 python -m curator check SPEC                  [--log-level LEVEL] [--log-format json|text]
+python -m curator ledger stats|collisions     [--ledger FILE] [--work-dir DIR] [--json]
 python -m curator --version
 ```
 
@@ -96,6 +107,8 @@ python -m curator --version
 | --- | --- |
 | `run SPEC` | Runs every stage of the spec in order and prints the stage funnel to stdout. `--json` prints the full report instead (`PipelineReport.to_dict()` plus `elapsed_seconds` and `records_per_second`). `--work-dir` overrides `CURATOR_WORK_DIR`. |
 | `check SPEC` | Loads and validates the spec, prints its input and stages, runs nothing. |
+| `ledger stats` | Lists the ledger's totals and every run with its in/kept/skipped/rerun counts. The ledger is `--ledger`, else `<work dir>/ledger.sqlite`; a missing one exits `66`. |
+| `ledger collisions` | Lists ids recorded with more than one content and contents recorded under more than one id, with the run and line of each side. |
 
 Logs go to stderr in the format chosen by `--log-format` or `CURATOR_LOG_FORMAT`. Exit codes:
 `0` success, `2` usage error, `78` bad spec or settings (`ConfigError`), `65` unusable data
@@ -156,6 +169,13 @@ stages:
     output_file: deduped.jsonl
     rejects_file: dedup_rejects.jsonl
     clusters_file: dedup_clusters.jsonl
+  - stage: ledger
+    path: null                     # default: <CURATOR_WORK_DIR>/ledger.sqlite, shared by every pipeline in it
+    fields: null                   # text fields hashed as the record's content; default: all of the kind
+    normalize: {lowercase: true, collapse_whitespace: true, strip_punctuation: false}
+    hash: xxhash
+    output_file: unseen.jsonl
+    seen_file: seen.jsonl
 ```
 
 **Records.** SFT accepts `{"messages": [{"role": ..., "content": ...}, ...]}` (user first,
@@ -177,6 +197,19 @@ clusters look like this:
 ```json
 {"line": 3, "id": "sft-103", "reason": "near_duplicate", "match": "sft-101", "similarity": 0.928571, "record": {"id": "sft-103", "prompt": "...", "response": "..."}}
 {"kept": "sft-101", "size": 4, "members": [{"id": "sft-102", "reason": "exact_duplicate", "similarity": 1.0}, {"id": "sft-103", "reason": "near_duplicate", "similarity": 0.928571}]}
+```
+
+**Ledger.** Each record's content hash (same normalisation and fields as `dedup`) is looked up in
+the SQLite ledger. Unseen content is recorded under this run's id and kept. Content an earlier run
+saw is written to `seen.jsonl` with that run's id, the id the content had there and its input:
+it is kept when the earlier run read the same input bytes (a re-run, so `unseen.jsonl` is
+byte-identical) and skipped when it came from a different input (an earlier batch). The ledger
+keeps the first sighting of each `(content, id)` pair, so re-runs do not grow it, and nothing is
+committed until the stage's files are written, so a failed run leaves it untouched. Duplicates
+inside one input pass through: that is the `dedup` stage's job.
+
+```json
+{"line": 2, "id": "c", "digest": "3487b07772598076a67584b6901893ce", "action": "skipped", "seen_run": "batch-1-20260928T222800Z-e17fe6e0", "seen_id": "b", "seen_source": "batch-1.jsonl"}
 ```
 
 More examples: [`examples/sft-validate.yaml`](examples/sft-validate.yaml),
@@ -218,11 +251,34 @@ for API bodies and logs, and an exit code from `sysexits.h` (see the CLI referen
                  "invalid_json": 2, "missing": 1, "non_finite_number": 1, "string_type": 2, "too_short": 1}},
     {"stage": "dedup", "total": 287, "kept": 220, "dropped": 67, "dropped_fraction": 0.233449,
      "reasons": {"contaminated": 12, "exact_duplicate": 30, "near_duplicate": 25},
-     "groups": 55, "reference_size": 15}
+     "groups": 55, "reference_size": 15},
+    {"stage": "ledger", "ledger": ".curator/ledger.sqlite", "run_id": "sft-demo-300-20260928T222731Z-d53dfc20",
+     "total": 220, "kept": 220, "dropped": 0, "dropped_fraction": 0.0, "reasons": {},
+     "new": 0, "rerun": 220, "earlier_runs": {"sft-demo-300-20260928T222726Z-30506baa": 220}}
   ],
-  "elapsed_seconds": 0.064709,
-  "records_per_second": 4620.7
+  "elapsed_seconds": 0.082412,
+  "records_per_second": 3567.1
 }
+```
+
+That was the second run, so the ledger stage saw every record before (`rerun: 220`) and names the
+run that delivered it. Two small batches through one ledger, where batch 2 reuses id `a` for new
+content and re-sends batch 1's `b` under the id `c`:
+
+```text
+$ python -m curator run batch-1.yaml --log-level ERROR | tail -2
+  ledger          2 in ->      2 out   (0 skipped)
+$ python -m curator run batch-2.yaml --log-level ERROR | tail -2
+  ledger          3 in ->      2 out   (1 skipped: seen=1)
+$ python -m curator ledger stats
+ledger .curator/ledger.sqlite: 2 runs, 5 records, 4 distinct contents, 4 distinct ids, 2 collisions
+  batch-1-20260928T222800Z-e17fe6e0  2026-09-28T22:28:00Z       2 in ->      2 kept (0 skipped, 0 rerun)  batch-1.jsonl
+  batch-2-20260928T222802Z-02aec112  2026-09-28T22:28:02Z       3 in ->      2 kept (1 skipped, 0 rerun)  batch-2.jsonl
+$ python -m curator ledger collisions
+same id, different content: 1
+  a: 119ebe881d3f06487d4d96a2f3fb14f7 (run batch-1-20260928T222800Z-e17fe6e0, line 1), 08c7a44a30ae931920f27012c042f0e5 (run batch-2-20260928T222802Z-02aec112, line 1)
+same content, different ids: 1
+  3487b07772598076a67584b6901893ce: b (run batch-1-20260928T222800Z-e17fe6e0, line 2), c (run batch-2-20260928T222802Z-02aec112, line 2)
 ```
 
 The demo data is generated by [`examples/make_demo_data.py`](examples/make_demo_data.py) with a
@@ -268,6 +324,11 @@ read-only at `/data` for your own specs and JSONL files.
   similarity is real, the seed fixes the clusters, and re-runs are byte-identical. The cost is a
   full n-gram comparison per candidate pair, and the usual LSH S-curve means a pair right at the
   threshold is found with only even odds, so thresholds should sit below the similarity to catch.
+- **The ledger keeps first sightings, not history.** One row per `(content, id)` pair with the run
+  that first saw it, plus one row per run with its counts, so the file stays small and a re-run
+  is a no-op for it; the price is that the ledger cannot say which later runs re-saw a record
+  beyond their totals. Identity for "same input" is the input file's bytes, not its path, so an
+  edited or appended file counts as a new batch and only its new content is delivered.
 - **Streaming, single process.** Records stream line by line and only the index lives in memory,
   so a laptop handles millions of short records; there is no multi-process path yet.
 - **Stable codes everywhere.** Reason codes, error codes, exit codes and log event names are part
@@ -283,17 +344,21 @@ share most of their words, the near-duplicate count exceeds the planted one.
 
 | Dataset | Records in | Kept | Runs | Wall-clock | Throughput |
 | --- | --- | --- | --- | --- | --- |
-| `examples/sft-demo.yaml` (bundled) | 299 | 220 | 3 | 0.060-0.065 s | 4,600-5,000 records/s |
-| 22k templated SFT records (not bundled) | 22,000 | 18,512 | 3 | 4.0-5.7 s | 3,800-5,500 records/s |
+| `examples/sft-demo.yaml`, validate + dedup only | 299 | 220 | 3 | 0.060-0.065 s | 4,600-5,000 records/s |
+| `examples/sft-demo.yaml` with the ledger stage (re-run) | 299 | 220 | 3 | 0.08 s | 3,500-3,700 records/s |
+| 22k templated SFT records, validate + dedup (not bundled) | 22,000 | 18,512 | 3 | 4.0-5.7 s | 3,800-5,500 records/s |
 
-`make demo` end to end (including interpreter start-up) takes 0.46 s (`/usr/bin/time -p`). The
-22k runs overlapped a Docker image build on the same machine, hence the spread. Full test suite:
-672 tests in about 13 s, 84% line coverage (`make test`).
+The ledger stage itself takes 9-10 ms for the demo's 220 records by the log timestamps (about
+22,000 records/s including the SQLite commit and fsync); the first run over a fresh ledger and a
+re-run cost the same. `make demo` end to end (including interpreter start-up) takes 0.54-0.59 s
+(`/usr/bin/time -p`, 3 runs). The 22k runs overlapped a Docker image build on the same machine,
+hence the spread. Full test suite: 686 tests in about 16 s with coverage, 86% line coverage
+(`make test`).
 
 ## What I would do next
 
-- A SQLite run ledger keyed by spec hash and input digest, so re-running an unchanged pipeline is a
-  no-op and each output can be traced to its inputs.
+- A `--since RUN` option for `ledger stats` and a `ledger runs --prune` command, so a ledger that
+  outlives its batches can be trimmed.
 - PII and secret scrubbing as a stage (emails, phone numbers, API keys), with the same
   quarantine-or-rewrite semantics as `validate`.
 - A quality validator registry (length bounds, language, refusal and boilerplate detection) that
@@ -326,7 +391,7 @@ Rust toolchain. Ruff, mypy and pytest never enter `third_party/`.
 
 | Path | Contents | Origin |
 | --- | --- | --- |
-| `src/curator/` | `cli.py`, `pipeline.py`, `config/`, `schemas/`, `stages/`, `dedup/`, `io/`, `errors.py`, `log.py` | this fork |
+| `src/curator/` | `cli.py`, `pipeline.py`, `ledger.py`, `config/`, `schemas/`, `stages/`, `dedup/`, `io/`, `errors.py`, `log.py` | this fork |
 | `examples/` | Pipeline specs, the seeded demo generator and sample datasets with planted defects | this fork |
 | `Makefile`, `Dockerfile`, `docker-compose.yml`, `.github/workflows/main.yml` | Developer entry points, runtime image, CI | this fork (CI extended from upstream) |
 | `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |

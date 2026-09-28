@@ -43,11 +43,12 @@ def test_run_prints_the_stage_funnel(tmp_path: Path) -> None:
     assert code == 0, err
     lines = out.splitlines()
     assert lines[0].startswith("pipeline sft-demo-300: ")
-    assert lines[0].endswith(str(tmp_path / "sft-demo-300" / "deduped.jsonl"))
+    assert lines[0].endswith(str(tmp_path / "sft-demo-300" / "unseen.jsonl"))
     assert "validate" in lines[1] and "299 in ->    287 out" in lines[1] and "12 quarantined" in lines[1]
     assert "dedup" in lines[2] and "287 in ->    220 out" in lines[2]
     assert "contaminated=12, exact_duplicate=30, near_duplicate=25" in lines[2]
-    assert lines[3].startswith("finished in ") and lines[3].endswith(" records/s)")
+    assert "ledger" in lines[3] and "220 in ->    220 out   (0 skipped)" in lines[3]
+    assert lines[4].startswith("finished in ") and lines[4].endswith(" records/s)")
     assert err == ""  # WARNING level: nothing logged for a clean run
 
 
@@ -57,7 +58,7 @@ def test_run_json_reports_every_stage_and_the_timing(tmp_path: Path) -> None:
     assert code == 0
     report = json.loads(out)
     assert report["pipeline"] == "sft-demo-300"
-    assert [stage["stage"] for stage in report["stages"]] == ["validate", "dedup"]
+    assert [stage["stage"] for stage in report["stages"]] == ["validate", "dedup", "ledger"]
     assert report["stages"][1]["reasons"] == {"contaminated": 12, "exact_duplicate": 30, "near_duplicate": 25}
     assert report["elapsed_seconds"] > 0
     assert report["records_per_second"] == pytest.approx(299 / report["elapsed_seconds"], rel=0.01)

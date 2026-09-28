@@ -84,10 +84,20 @@ def test_demo_example_runs_as_documented(tmp_path: Path, monkeypatch: pytest.Mon
 
     report = run_pipeline(spec, work_dir=tmp_path / "work")
 
-    validate, dedup = report.to_dict()["stages"]
+    validate, dedup, ledger = report.to_dict()["stages"]
     assert (validate["total"], validate["valid"], validate["invalid"]) == (299, 287, 12)
     assert (dedup["total"], dedup["kept"], dedup["reference_size"]) == (287, 220, 15)
     assert dedup["reasons"] == {"contaminated": 12, "exact_duplicate": 30, "near_duplicate": 25}
+    assert (ledger["total"], ledger["kept"], ledger["new"], ledger["rerun"]) == (220, 220, 220, 0)
+    assert ledger["ledger"] == str(tmp_path / "work" / "ledger.sqlite")
+    first = report.output_path.read_bytes()
+
+    again = run_pipeline(spec, work_dir=tmp_path / "work")
+
+    assert again.output_path.read_bytes() == first  # a re-run is byte-identical
+    ledger = again.to_dict()["stages"][2]
+    assert (ledger["kept"], ledger["new"], ledger["rerun"], ledger["dropped"]) == (220, 0, 220, 0)
+    assert ledger["earlier_runs"] == {report.to_dict()["stages"][2]["run_id"]: 220}
 
 
 def test_demo_data_is_reproducible() -> None:
