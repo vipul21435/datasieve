@@ -104,7 +104,8 @@ make test
 `make demo` validates and deduplicates the bundled sample (see the output above), writes the
 kept records, the quarantine file, the rejects, the clusters and the ledger's seen report to
 `.curator/sft-demo-300/`, and records the run in `.curator/ledger.sqlite`; run it twice and the
-ledger line reads `220 in -> 220 out` again with every record reported as a re-run.
+ledger line reads `220 in -> 220 out (0 skipped)` again, while the `--json` report and the
+`ledger.finished` log line count every record as a re-run (`rerun: 220`).
 `make test` runs the unit tests and doctests with coverage (the count and timing are under
 Benchmarks). `make help` lists the rest (`lint`, `typecheck`, `ci`, `clean`).
 
