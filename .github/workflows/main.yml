@@ -82,7 +82,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build the runtime image
-        run: docker build -t datasieve:ci .
+        run: docker build -t datasieve:dev .
 
       - name: Run the demo pipeline in the image (no network)
-        run: docker run --rm --network none datasieve:ci
+        run: docker run --rm --network none datasieve:dev
+
+      - name: Run it again with a named volume on the work dir (must be writable by uid 1000)
+        run: docker run --rm --network none -v datasieve-ci-runs:/home/curator/runs datasieve:dev
+
+      - name: Validate docker-compose.yml and run the demo service through it
+        run: |
+          docker compose config --quiet
+          docker compose run --rm demo

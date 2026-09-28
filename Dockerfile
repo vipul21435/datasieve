@@ -39,6 +39,11 @@ COPY examples ./examples
 RUN uv sync --frozen --no-dev --no-editable \
     && chown -R curator:curator /app/examples
 
+# CURATOR_WORK_DIR has to exist, owned by curator, before the USER switch: Docker
+# initialises a named volume mounted there (docker-compose.yml, -v runs:/home/curator/runs)
+# from the image's directory and its owner, and would otherwise create it root-owned.
+RUN install -d -o curator -g curator /home/curator/runs
+
 USER curator
 ENV PATH="/opt/venv/bin:$PATH" \
     CURATOR_WORK_DIR=/home/curator/runs \
