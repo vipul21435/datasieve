@@ -382,7 +382,7 @@ pays the SQLite import, the digest of the input bytes and the connection open pl
 `make demo` end to end (including interpreter start-up) takes 0.59-0.74 s (`/usr/bin/time -p`,
 6 runs); a second machine under load measured every number here about 1.5x slower, so treat them
 as an idle-machine floor. The 22k runs overlapped a Docker image build on the same machine, hence
-the spread. Full test suite: 756 tests in about 12-17 s with coverage, 86% line coverage
+the spread. Full test suite: 763 tests in about 4-17 s with coverage, 86% line coverage
 (`make test`).
 
 ## What I would do next
