@@ -211,3 +211,17 @@ def test_kinds_cover_every_detector() -> None:
 def test_bare_string_kinds_selects_that_single_detector() -> None:
     assert [d.kind for d in detect("a@b.io from 10.0.0.1", kinds="email")] == ["email"]
     assert scrub("a@b.io from 10.0.0.1", kinds="ipv4").text == "a@b.io from [IPV4]"
+
+
+def test_entropy_of_empty_string_is_zero() -> None:
+    assert shannon_entropy("") == 0.0
+
+
+def test_luhn_rejects_input_with_non_digit_characters() -> None:
+    assert luhn_valid("4111-1111") is False
+    assert luhn_valid("") is False
+
+
+def test_lower_priority_candidate_inside_an_email_is_dropped() -> None:
+    # The 16-digit local part passes Luhn, but the email owns the span.
+    assert [d.kind for d in detect("4111111111111111@x.io")] == ["email"]
