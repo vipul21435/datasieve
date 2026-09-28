@@ -105,8 +105,8 @@ make test
 kept records, the quarantine file, the rejects, the clusters and the ledger's seen report to
 `.curator/sft-demo-300/`, and records the run in `.curator/ledger.sqlite`; run it twice and the
 ledger line reads `220 in -> 220 out` again with every record reported as a re-run.
-`make test` runs the 680-odd unit tests and doctests with coverage. `make help` lists the rest
-(`lint`, `typecheck`, `ci`, `clean`).
+`make test` runs the unit tests and doctests with coverage (the count and timing are under
+Benchmarks). `make help` lists the rest (`lint`, `typecheck`, `ci`, `clean`).
 
 ## CLI reference
 
