@@ -37,8 +37,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/vipul21435/sft-data-curator"
-Repository = "https://github.com/vipul21435/sft-data-curator"
+Homepage = "https://github.com/vipul21435/datasieve"
+Repository = "https://github.com/vipul21435/datasieve"
 Upstream = "https://github.com/ChenghaoMou/text-dedup"
 "Upstream Documentation" = "https://ChenghaoMou.github.io/text-dedup/"
 

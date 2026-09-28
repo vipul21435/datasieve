@@ -1,180 +1,107 @@
 Forked from https://github.com/ChenghaoMou/text-dedup.
 
-# sft-data-curator
+# DataSieve
 
-Training-data curation for SFT and preference (chosen/rejected) datasets, built as a fork of
-[ChenghaoMou/text-dedup](https://github.com/ChenghaoMou/text-dedup). The upstream `text_dedup`
-package is kept intact and reused for near-duplicate detection; the fork's own code lives in the
-new `curator` package. Everything runs on CPU and needs no paid API keys.
+Validate and deduplicate LLM training data (SFT and preference records) from one declarative
+pipeline spec, on CPU, with no API keys. DataSieve is a fork of
+[ChenghaoMou/text-dedup](https://github.com/ChenghaoMou/text-dedup): the upstream `text_dedup`
+package is kept intact and reused for MinHash/LSH, and everything the fork adds lives in the new
+`curator` package next to it.
 
-> Status: configuration, record schemas, the `validate` stage and the `dedup` stage are in place
-> and run end to end through `curator.pipeline` (see [Running a pipeline](#running-a-pipeline)).
-> PII scrubbing, quality filters, synthetic data, dataset cards, the run ledger, the CLI and the
-> HTTP API land in follow-up changes.
+```text
+$ make demo
+pipeline sft-demo-300: examples/data/sft_demo.jsonl -> .curator/sft-demo-300/deduped.jsonl
+  validate      299 in ->    287 out   (12 quarantined: blank_text=2, consecutive_same_role=1, ...)
+  dedup         287 in ->    220 out   (67 dropped: contaminated=12, exact_duplicate=30, near_duplicate=25)
+finished in 0.06s (4,648 records/s)
+```
 
 ## What I built on top
 
-- Typed configuration: `CURATOR_*` settings and a YAML/TOML/JSON pipeline spec where unknown or
-  duplicate keys are errors (`curator.config`).
-- Strict record schemas for SFT and preference data with stable reason codes (`curator.schemas`).
-- The `validate` stage: per-record reasons, a quarantine file, an invalid-fraction threshold and
-  atomic, re-run-stable outputs (`curator.stages.validate`).
-- JSON logging with bound context and an error hierarchy with `sysexits` codes (`curator.log`,
-  `curator.errors`).
-- The `dedup` stage: exact-hash dedup on normalised text, MinHash/LSH near-duplicate clustering
-  (keep-first, seeded, verified with the exact Jaccard similarity) and a contamination check
-  against a reference split; rejects carry a reason code, the matched id and the similarity
-  (`curator.stages.dedup`, `curator.dedup`).
-- A pipeline runner that chains the stages of a spec and summarises every stage
-  (`curator.pipeline`).
+Everything below is fork work (`git log --author=vipul21435@iiitd.ac.in`); `src/text_dedup/`,
+`benchmarks/` and `report/` are upstream code.
 
-## Repository layout
+- **Typed configuration** (`curator.config`): `CURATOR_*` settings via pydantic-settings and a
+  YAML/TOML/JSON pipeline spec in which unknown keys, duplicate keys and typos are errors, with
+  relative paths resolved against the spec file.
+- **Strict record schemas** (`curator.schemas`): SFT in chat or prompt/response form and
+  preference (chosen/rejected) pairs, with stable machine-readable reason codes and
+  content-derived ids for records that have none.
+- **The `validate` stage** (`curator.stages.validate`): every input line ends up in the output or
+  in a quarantine file with all of its reasons; an invalid-fraction threshold fails the run
+  before a half-good dataset flows downstream; outputs are atomic and byte-identical on re-run.
+- **The `dedup` stage** (`curator.stages.dedup`, `curator.dedup`): exact dedup by content hash of
+  normalised text, near-duplicate clustering with MinHash/LSH (seeded, keep-first, every
+  candidate verified with the exact Jaccard similarity) and a contamination check against an
+  evaluation split; rejects carry the reason, the matched id and the similarity.
+- **A pipeline runner and CLI** (`curator.pipeline`, `curator.cli`): stages chain through the
+  run directory and `python -m curator run` prints the stage funnel or a JSON report.
+- **Structured logging and an error hierarchy** (`curator.log`, `curator.errors`): JSON log lines
+  with bound context, and `CuratorError` subclasses with stable codes and `sysexits` exit codes.
+- **Packaging and delivery**: a seeded 299-record demo dataset with planted defects, a Makefile,
+  a digest-pinned non-root Docker image with a compose file, and CI that lints, type-checks,
+  tests on Python 3.12 and 3.13, checks the wheel and builds the image.
 
-| Path | Contents | Origin |
-| --- | --- | --- |
-| `src/curator/` | Curation pipeline: `config/`, `schemas/`, `stages/`, `dedup/`, `io/`, `pipeline.py`, `errors.py`, `log.py` | this fork |
-| `examples/` | Example pipeline specs and small sample datasets with deliberate defects | this fork |
-| `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |
-| `benchmarks/`, `report/` | Dedup benchmarks and report app | upstream text-dedup |
-| `third_party/deduplicate-text-datasets` | Optional Rust suffix-array backend (git submodule) | Google Research |
+## Architecture
 
-Both `curator` and `text_dedup` ship in the single `sft-data-curator` wheel.
-
-## Validating a dataset
-
-A run is described by a pipeline spec in YAML, TOML or JSON. Relative paths resolve against the
-spec file's directory, and unknown or duplicate keys are errors, so a typo cannot silently fall
-back to a default.
-
-```yaml
-# examples/sft-validate.yaml
-version: 1
-name: sft-demo
-input:
-  path: data/sft_sample.jsonl
-  kind: sft                    # sft | preference
-stages:
-  - stage: validate
-    unknown_fields: metadata   # reject (default) | metadata
-    max_invalid_fraction: 0.5  # fail the run if more than half of the records are rejected
+```mermaid
+flowchart LR
+    subgraph inputs [Inputs]
+        SPEC["pipeline spec<br/>(YAML / TOML / JSON)"]
+        RAW["raw JSONL<br/>(sft | preference)"]
+        EVAL["reference split<br/>(optional)"]
+    end
+    CLI["python -m curator run"] --> LOAD["curator.config<br/>load_settings + load_spec"]
+    SPEC --> LOAD
+    LOAD --> RUN["curator.pipeline.run_pipeline"]
+    RAW --> V
+    subgraph stages [Stages, each reads the previous output]
+        V["validate<br/>curator.schemas"] --> D["dedup<br/>hash + MinHash/LSH"]
+    end
+    RUN --> V
+    EVAL --> D
+    V -.-> Q["quarantine.jsonl"]
+    D -.-> R["dedup_rejects.jsonl<br/>dedup_clusters.jsonl"]
+    D --> OUT["deduped.jsonl"]
+    D --> TD["text_dedup (upstream)<br/>hashing, n-grams, LSH params"]
+    RUN --> REPORT["stage funnel / JSON report<br/>+ JSON logs on stderr"]
 ```
 
-There is no CLI yet, so run the spec from Python (see [Running a pipeline](#running-a-pipeline));
-a single stage can also be called directly:
+## Quickstart
 
-```python
-from curator.config import load_settings, load_spec
-from curator.log import configure_logging
-from curator.stages.validate import run_validate
+Five commands from a fresh clone; needs Python 3.12 and [uv](https://docs.astral.sh/uv/):
 
-settings = load_settings()
-configure_logging(settings.log_level, settings.log_format)
-spec = load_spec("examples/sft-validate.yaml")
-report = run_validate(
-    spec.input.path, spec.output_dir(settings.work_dir), kind=spec.input.kind, config=spec.stages[0]
-)
-print(report.to_dict())  # total 14, valid 8, rejected records per reason code
+```bash
+git clone https://github.com/vipul21435/datasieve.git
+cd datasieve
+uv sync
+make demo
+make test
 ```
 
-**Accepted records.** Each JSONL line is one record, with an optional `id` and a free-form
-`metadata` object:
+`make demo` validates and deduplicates the bundled sample (see the output above) and writes the
+kept records, the quarantine file, the rejects and the clusters to `.curator/sft-demo-300/`.
+`make test` runs the 670-odd unit tests and doctests with coverage. `make help` lists the rest
+(`lint`, `typecheck`, `ci`, `clean`).
 
-| Kind | Shape | Fields |
-| --- | --- | --- |
-| `sft` | chat | `messages`: `system` (first message only), then alternating `user` / `assistant` turns, ending with `assistant`; `tool` turns follow an assistant turn |
-| `sft` | prompt/response | `prompt`, `response`, optional `system` |
-| `preference` | text | `prompt`, `chosen`, `rejected`, optional `score_chosen` / `score_rejected` |
-| `preference` | chat | `prompt` (messages ending with a user turn), `chosen` / `rejected` (assistant continuations), optional scores |
+## CLI reference
 
-Validation is strict. Types are never coerced and text is never modified. A preference pair is
-rejected when `chosen` and `rejected` are identical apart from whitespace, or when `chosen` is
-scored below `rejected`. A record without an `id` gets a content hash as its id, which ignores
-metadata and scores and is the same for the chat and flat forms of an example. Exact duplicates
-are caught by that id.
-
-**Outputs.** `validated.jsonl` holds the valid records in their input shape, with `id` filled in.
-`quarantine.jsonl` has one entry per rejected line, listing every reason:
-
-```json
-{"line": 4, "id": "sft-004", "reasons": [{"code": "blank_text", "field": "messages[1].content", "message": "must contain non-whitespace text"}], "record": {"id": "sft-004", "messages": ["..."]}}
+```text
+python -m curator run   SPEC [--work-dir DIR] [--json] [--log-level LEVEL] [--log-format json|text]
+python -m curator check SPEC                  [--log-level LEVEL] [--log-format json|text]
+python -m curator --version
 ```
 
-Reason codes are stable. They are pydantic's error types (`missing`, `extra_forbidden`,
-`literal_error`, ...), the schema rules (`blank_text`, `last_turn_not_assistant`,
-`consecutive_same_role`, `identical_responses`, `chosen_scored_below_rejected`, ...), or file-level
-checks (`invalid_json`, `invalid_encoding`, `duplicate_key`, `non_finite_number`,
-`invalid_unicode`, `duplicate_id`). Both files are written atomically, so a re-run produces
-byte-identical output. When the rejected fraction exceeds `max_invalid_fraction`, the stage
-raises `QuarantineThresholdError`. It still writes the quarantine file, but it withholds
-`validated.jsonl`.
+| Command | What it does |
+| --- | --- |
+| `run SPEC` | Runs every stage of the spec in order and prints the stage funnel to stdout. `--json` prints the full report instead (`PipelineReport.to_dict()` plus `elapsed_seconds` and `records_per_second`). `--work-dir` overrides `CURATOR_WORK_DIR`. |
+| `check SPEC` | Loads and validates the spec, prints its input and stages, runs nothing. |
 
-## Deduplicating a dataset
+Logs go to stderr in the format chosen by `--log-format` or `CURATOR_LOG_FORMAT`. Exit codes:
+`0` success, `2` usage error, `78` bad spec or settings (`ConfigError`), `65` unusable data
+(`DataError`, including a quarantine threshold breach), `66` missing input file.
 
-The `dedup` stage runs after `validate` and removes duplicates keep-first: the first record of a
-group stays, later ones are dropped, and the output keeps the input's order. Every option with its
-default:
-
-```yaml
-stages:
-  - stage: validate
-  - stage: dedup
-    fields: [prompt, response]  # text fields to compare; default: every text field of the kind
-    normalize:                  # canonical form used for exact matching
-      lowercase: true
-      collapse_whitespace: true
-      strip_punctuation: false
-    hash: xxhash                # content hash of the normalised text: xxhash | sha256
-    near:
-      enabled: true
-      num_perm: 128             # MinHash signature length
-      ngram_size: 3             # word n-grams
-      threshold: 0.8            # Jaccard similarity at or above which the later record is a duplicate
-      seed: 42                  # same seed, same clusters
-    reference:                  # optional contamination check
-      path: data/eval.jsonl     # records matching this set are dropped
-      fields: [prompt]          # default: the stage's fields
-      threshold: 0.9            # default: near.threshold
-    output_file: deduped.jsonl
-    rejects_file: dedup_rejects.jsonl
-    clusters_file: dedup_clusters.jsonl
-```
-
-For each record the compared fields are normalised, joined with newlines (so field boundaries
-count) and checked in this order:
-
-1. `contaminated`: the text matches a record of `reference.path`, exactly or at
-   `reference.threshold`. Reference lines may be records of the pipeline's kind or plain objects
-   with the compared fields as strings; a line's id is its `id`, else `line:<number>`.
-2. `exact_duplicate`: the content hash of the normalised text was already kept. This also catches
-   the chat and prompt/response forms of one example, and copies that differ only in case,
-   whitespace or metadata.
-3. `near_duplicate`: a kept record's word n-gram set is at least `near.threshold` similar.
-   MinHash/LSH (upstream `text_dedup`'s 64-bit scheme and band split) proposes candidate pairs and
-   the exact Jaccard similarity decides, so the reported similarity is never an estimate. A pair
-   sitting right at the threshold is proposed with only even odds (the usual LSH S-curve), so set
-   the threshold a little below the similarity you want to catch.
-
-Groups are stars around the kept record: a record that resembles a dropped duplicate but not the
-kept one stays, and a copy of a contaminated record is contaminated too, since nothing of it was
-kept. Contaminated records are therefore not clustered.
-
-**Outputs.** `deduped.jsonl` holds the kept records unchanged. `dedup_rejects.jsonl` has one entry
-per dropped record with the id it matched (a kept record, or the reference record for
-`contaminated`); `dedup_clusters.jsonl` has one entry per kept record that had duplicates:
-
-```json
-{"line": 3, "id": "sft-103", "reason": "near_duplicate", "match": "sft-101", "similarity": 0.928571, "record": {"id": "sft-103", "prompt": "...", "response": "..."}}
-{"kept": "sft-101", "size": 4, "members": [{"id": "sft-102", "reason": "exact_duplicate", "similarity": 1.0}, {"id": "sft-103", "reason": "near_duplicate", "similarity": 0.928571}, {"id": "sft-104", "reason": "exact_duplicate", "similarity": 1.0}]}
-```
-
-All three files are written atomically, and two runs with the same seed produce byte-identical
-files. A line that is not a valid record raises `StageInputError` (run `validate` first), and an
-output that would overwrite the input or the reference file raises `ConfigError`.
-
-## Running a pipeline
-
-`curator.pipeline.run_pipeline` runs a spec's stages in order; each stage reads the previous
-stage's output, and every file lands in `output.dir` or `<CURATOR_WORK_DIR>/<name>`:
+The same thing from Python:
 
 ```python
 from curator.config import load_settings, load_spec
@@ -183,24 +110,80 @@ from curator.pipeline import run_pipeline
 
 settings = load_settings()
 configure_logging(settings.log_level, settings.log_format)
-report = run_pipeline(load_spec("examples/sft-dedup.yaml"), work_dir=settings.work_dir)
-print(report.output_path)  # .curator/sft-dedup-demo/deduped.jsonl
-for stage in report.to_dict()["stages"]:
-    print(stage)
+report = run_pipeline(load_spec("examples/sft-demo.yaml"), work_dir=settings.work_dir)
+print(report.output_path, [stage.to_dict() for stage in report.stages])
 ```
 
-On [`examples/sft-dedup.yaml`](examples/sft-dedup.yaml) that prints two summaries: `validate`
-keeps 9 of 10 records (one blank response), and `dedup` keeps 3 of those 9, dropping three exact
-duplicates (an upper-cased copy, the chat form of the same example, and a copy that differs only
-in metadata), one near duplicate (0.93) and two records contaminated by the evaluation split (an
-exact copy and a one-word variant at 0.95). A stage that fails raises its `CuratorError`; earlier
-stages keep their files and later ones do not run.
+## Pipeline spec reference
+
+A run is one spec file. Unknown or duplicate keys are errors, relative paths resolve against the
+spec's directory, and the first stage must be `validate` so later stages see typed records. Every
+option with its default:
+
+```yaml
+version: 1
+name: sft-demo-300                 # [a-z0-9._-]; names the output directory
+description: ""
+input:
+  path: data/sft_demo.jsonl
+  kind: sft                        # sft | preference
+output:
+  dir: null                        # default: <CURATOR_WORK_DIR>/<name>
+stages:
+  - stage: validate
+    unknown_fields: reject         # reject | metadata (move unknown top-level keys into metadata)
+    reject_duplicate_ids: true
+    max_invalid_fraction: null     # e.g. 0.25: fail the run if more than 25% is quarantined
+    output_file: validated.jsonl
+    quarantine_file: quarantine.jsonl
+  - stage: dedup
+    fields: null                   # text fields to compare; default: all of the kind (sft: prompt, response)
+    normalize:
+      lowercase: true
+      collapse_whitespace: true
+      strip_punctuation: false
+    hash: xxhash                   # xxhash | sha256, over the normalised text
+    near:
+      enabled: true
+      num_perm: 128                # MinHash signature length
+      ngram_size: 3                # word n-grams
+      threshold: 0.8               # Jaccard similarity at or above which the later record is dropped
+      seed: 42
+    reference: null                # optional contamination check:
+    #   path: data/eval.jsonl      #   records matching this split are dropped
+    #   fields: null               #   default: the stage's fields
+    #   threshold: null            #   default: near.threshold
+    output_file: deduped.jsonl
+    rejects_file: dedup_rejects.jsonl
+    clusters_file: dedup_clusters.jsonl
+```
+
+**Records.** SFT accepts `{"messages": [{"role": ..., "content": ...}, ...]}` (user first,
+assistant last, optional leading system turn) or `{"prompt", "response", "system"?}`; preference
+accepts `{"prompt", "chosen", "rejected"}` in text or chat form, with optional scores. Both take an
+optional `id` and a free-form `metadata` object. A record without an id gets a content-derived
+one, so the chat and prompt/response forms of one example share an id.
+
+**Validate.** Each non-blank line goes to `validated.jsonl` or to `quarantine.jsonl` with every
+reason (`blank_text`, `missing`, `string_type`, `consecutive_same_role`, `duplicate_id`,
+`invalid_json`, `duplicate_key`, `non_finite_number`, ...).
+
+**Dedup.** The compared fields are normalised, joined and checked keep-first in this order:
+`contaminated` (matches the reference split exactly or at the threshold), `exact_duplicate`
+(content hash already kept), `near_duplicate` (a kept record's n-gram set is at least
+`threshold` similar; LSH proposes candidates, the exact Jaccard similarity decides). Rejects and
+clusters look like this:
+
+```json
+{"line": 3, "id": "sft-103", "reason": "near_duplicate", "match": "sft-101", "similarity": 0.928571, "record": {"id": "sft-103", "prompt": "...", "response": "..."}}
+{"kept": "sft-101", "size": 4, "members": [{"id": "sft-102", "reason": "exact_duplicate", "similarity": 1.0}, {"id": "sft-103", "reason": "near_duplicate", "similarity": 0.928571}]}
+```
+
+More examples: [`examples/sft-validate.yaml`](examples/sft-validate.yaml),
+[`examples/preference-validate.toml`](examples/preference-validate.toml) and
+[`examples/sft-dedup.yaml`](examples/sft-dedup.yaml) (ten records, every dedup reason once).
 
 ## Settings, logging and errors
-
-Runtime settings come from `CURATOR_*` environment variables or a `.env` file; see
-[`.env.example`](.env.example). Explicit arguments override environment variables, which override
-`.env`, which overrides the defaults. An unknown `CURATOR_*` variable is logged as a likely typo.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -208,326 +191,151 @@ Runtime settings come from `CURATOR_*` environment variables or a `.env` file; s
 | `CURATOR_LOG_FORMAT` | `json` | `json` (one object per line on stderr) or `text` |
 | `CURATOR_WORK_DIR` | `.curator` | Output root; a spec without `output.dir` writes to `<work dir>/<name>` |
 
-With `json`, every log line is an event name plus fields, with context such as the current stage
-bound by `curator.log.log_context` (the pipeline runner also binds `pipeline`; file paths left
-out here):
+CLI flags override environment variables, which override a `.env` file (see
+[`.env.example`](.env.example)), which overrides the defaults; an unknown `CURATOR_*` variable is
+logged as a likely typo. With `json`, every log line is an event plus fields, with the pipeline
+and stage bound as context:
 
 ```json
-{"ts":"2026-09-28T17:59:11.134Z","level":"info","logger":"curator.stages.validate","event":"validate.finished","stage":"validate","total":14,"valid":8,"invalid":6,"reasons":{"blank_text":1,"duplicate_id":2,"invalid_json":1,"last_turn_not_assistant":1,"literal_error":1}}
+{"ts":"2026-09-28T21:50:11.520Z","level":"info","logger":"curator.stages.dedup","event":"dedup.finished","pipeline":"sft-demo-300","stage":"dedup","total":287,"kept":220,"dropped":67,"reasons":{"contaminated":12,"exact_duplicate":30,"near_duplicate":25},"groups":55}
 ```
 
-Every deliberate failure is a `curator.errors.CuratorError`. Each one has a stable `code`, a
-`to_dict()` for API bodies, and an exit code taken from `sysexits.h`. `ConfigError` (bad settings
-or spec) exits with 78, `DataError` (a rejected record, too many rejects, a stage input that is
-not a record) with 65, and `InputFileError` (missing input) with 66.
+Every deliberate failure is a `curator.errors.CuratorError` with a stable `code`, a `to_dict()`
+for API bodies and logs, and an exit code from `sysexits.h` (see the CLI reference).
 
-## Development
+## Sample output
 
-Requires [uv](https://docs.astral.sh/uv/); Python 3.12 is selected via `.python-version`.
+`python -m curator run examples/sft-demo.yaml --json --log-level WARNING` (paths shortened):
+
+```json
+{
+  "pipeline": "sft-demo-300",
+  "input": "examples/data/sft_demo.jsonl",
+  "output": ".curator/sft-demo-300/deduped.jsonl",
+  "stages": [
+    {"stage": "validate", "total": 299, "valid": 287, "invalid": 12, "invalid_fraction": 0.040134,
+     "reasons": {"blank_text": 2, "consecutive_same_role": 1, "duplicate_id": 1, "duplicate_key": 1,
+                 "invalid_json": 2, "missing": 1, "non_finite_number": 1, "string_type": 2, "too_short": 1}},
+    {"stage": "dedup", "total": 287, "kept": 220, "dropped": 67, "dropped_fraction": 0.233449,
+     "reasons": {"contaminated": 12, "exact_duplicate": 30, "near_duplicate": 25},
+     "groups": 55, "reference_size": 15}
+  ],
+  "elapsed_seconds": 0.064709,
+  "records_per_second": 4620.7
+}
+```
+
+The demo data is generated by [`examples/make_demo_data.py`](examples/make_demo_data.py) with a
+fixed seed: 220 distinct records plus 30 exact copies (case or whitespace changes), 25 near copies
+(one or two words changed), 12 copies of the 15-record evaluation split and 12 invalid rows. The
+counts the pipeline reports are exactly the planted ones, and a test regenerates the files byte
+for byte.
+
+## Docker
 
 ```bash
-uv sync                                  # runtime + dev dependencies, pinned by uv.lock
-uv run pytest                            # unit tests and src doctests
-uv run ruff check . && uv run ruff format --check .
-uv run mypy                              # src/, with stricter settings for curator.*
-uv run pre-commit install                # optional: ruff + hygiene hooks on commit
+docker build -t datasieve:dev .
+docker run --rm datasieve:dev                                   # the demo pipeline
+docker run --rm datasieve:dev --help
+docker run --rm -v "$PWD/data:/data:ro" datasieve:dev run /data/my-spec.yaml
+docker compose run --rm demo                                    # same, via docker-compose.yml
 ```
 
-### Optional: suffix-array backend
+The image is `python:3.12-slim` pinned by digest, runs as the non-root user `curator`, installs
+only the runtime dependencies from `uv.lock` and does not build the optional Rust suffix-array
+backend. It is `linux/amd64` only: the upstream dependency `polars-grouper` publishes x86_64
+wheels but no aarch64 wheel, so an arm64 image would need a Rust toolchain; on Apple Silicon Docker
+runs it under emulation, which is fine for the demo and small datasets.
 
-`text_dedup.suffix_array` shells out to Google's
-[deduplicate-text-datasets](https://github.com/google-research/deduplicate-text-datasets) (Rust).
-It is not needed to install the package, run the tests or use the curation pipeline, and a plain
-clone leaves the submodule empty. To enable it:
+## Design decisions and tradeoffs
 
-```bash
-git submodule update --init third_party/deduplicate-text-datasets
-# and install a Rust toolchain so that `cargo` is on PATH (https://rustup.rs)
-```
-
-Without both, the suffix-array algorithm stops before doing any work with a
-`SuffixArrayBackendError` that names what is missing.
-
-The checkout is vendored upstream code: ruff excludes `third_party/` (see `[tool.ruff]` in
-`pyproject.toml`), so the lint and format commands above neither flag nor rewrite it, and the
-default pytest and mypy runs never enter it.
-
-## License and credits
-
-Apache 2.0, see [LICENSE](LICENSE). `text_dedup`, the benchmarks and the report app are the work
-of Chenghao Mou and the text-dedup contributors; cite upstream (see Citations below) when you use
-the deduplication algorithms.
-
----
-
-# Upstream README: text-dedup
-
-The rest of this file is the upstream project's README, kept as-is. Its install and run
-instructions refer to the upstream repository.
-
-<center><img src="./banner.png"/ style="background-color:white;"></center>
-
-![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue) ![GitHub](https://img.shields.io/github/license/ChenghaoMou/text-dedup) [![Codacy Badge](https://app.codacy.com/project/badge/Grade/cc66178e49d24908ac1fb2b2dbe4e5b3)](https://www.codacy.com/gh/ChenghaoMou/text-dedup/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ChenghaoMou/text-dedup&utm_campaign=Badge_Grade) [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/cc66178e49d24908ac1fb2b2dbe4e5b3)](https://www.codacy.com/gh/ChenghaoMou/text-dedup/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ChenghaoMou/text-dedup&utm_campaign=Badge_Coverage) [![DOI](https://zenodo.org/badge/347428086.svg)](https://zenodo.org/badge/latestdoi/347428086)
-
-## Installation
-
-```bash
-git clone https://github.com/ChenghaoMou/text-dedup
-cd text-dedup
-uv sync
-```
-
-## Documentation
-
-[Github Pages](https://chenghaomou.github.io/text-dedup/)
-
-## Features
-
-This repository contains a collection of text deduplication scripts that are ready to use, or modify based on your needs:
-
-- MinHash + MinHashLSH for near-duplicate detection
-- 64 or 128 bit SimHash
-- SuffixArray Substring exact deduplication
-- Bloom Filter exact deduplication
-
-All algorithms use a config-based approach with TOML files for easy customization.
-
-## Quick Start
-
-All deduplication scripts read from a `config.toml` file in the project root.
-
-### 1. Configure your settings
-
-Edit `config.toml` with your input data and algorithm settings:
-
-<details>
-<summary>MinHash Near Deduplication</summary>
-
-```toml
-[input]
-input_type = "local_files"
-file_type = "parquet"
-
-[input.read_arguments]
-path = "data/your_data"
-split = "train"
-
-[algorithm]
-algorithm_name = "minhash"
-text_column = "text"
-seed = 42
-batch_size = 10000
-num_perm = 240
-threshold = 0.7
-false_positive_weight = 0.5
-false_negative_weight = 0.5
-hash_bits = 64
-ngram_size = 5
-check_false_positive = true
-
-[output]
-output_dir = "output"
-clean_cache = false
-save_clusters = true
-
-[debug]
-enable_profiling = false
-```
-
-</details>
-
-<details>
-<summary>SimHash Near Deduplication</summary>
-
-```toml
-[input]
-input_type = "local_files"
-file_type = "parquet"
-
-[input.read_arguments]
-path = "data/your_data"
-split = "train"
-
-[algorithm]
-algorithm_name = "simhash"
-text_column = "text"
-hash_bits = 64
-ngram_size = 3
-bit_diff = 3
-
-[output]
-output_dir = "output"
-clean_cache = false
-
-[debug]
-enable_profiling = false
-```
-
-</details>
-
-<details>
-<summary>Bloom Filter Exact Deduplication</summary>
-
-```toml
-[input]
-input_type = "local_files"
-file_type = "parquet"
-
-[input.read_arguments]
-path = "data/your_data"
-split = "train"
-
-[algorithm]
-algorithm_name = "bloom_filter"
-text_column = "text"
-error_rate = 1e-5
-expected_elements = 100000
-
-[output]
-output_dir = "output"
-clean_cache = false
-
-[debug]
-enable_profiling = false
-```
-
-</details>
-
-<details>
-<summary>Suffix Array Substring Exact Deduplication</summary>
-
-```toml
-[input]
-input_type = "local_files"
-file_type = "parquet"
-
-[input.read_arguments]
-path = "data/your_data"
-split = "train"
-
-[algorithm]
-algorithm_name = "suffix_array"
-text_column = "text"
-google_repo_path = "third_party/deduplicate-text-datasets"
-merge_strategy = "longest"
-length_threshold = 100
-cache_dir = ".cache"
-
-[output]
-output_dir = "output"
-clean_cache = false
-
-[debug]
-enable_profiling = false
-```
-
-</details>
-
-### 2. Run the deduplication
-
-```bash
-# MinHash
-python -m text_dedup.minhash
-
-# SimHash
-python -m text_dedup.simhash
-
-# Bloom Filter
-python -m text_dedup.bloom_filter
-
-# Suffix Array
-python -m text_dedup.suffix_array
-```
+- **Fork, do not vendor.** `text_dedup` stays a normal importable package and `curator` reuses its
+  hashing, n-gram and LSH-parameter code. The cost is carrying upstream's dependency list
+  (`datasets`, `polars`, `scipy`) in an image that only needs a fraction of it.
+- **Spec file, not flags.** A pipeline is data (versioned, diffable, reviewable), and pydantic
+  models with `extra="forbid"` make typos loud. The tradeoff is verbosity for one-off runs, which
+  is why the CLI stays thin.
+- **Validate first, always.** Later stages only ever see typed records, so they hold no defensive
+  code, and the quarantine file makes every rejection auditable. A dataset that fails the
+  invalid-fraction threshold produces no output file at all rather than a partial one.
+- **Keep-first, exact-verified near dedup.** LSH proposes, Jaccard decides: the reported
+  similarity is real, the seed fixes the clusters, and re-runs are byte-identical. The cost is a
+  full n-gram comparison per candidate pair, and the usual LSH S-curve means a pair right at the
+  threshold is found with only even odds, so thresholds should sit below the similarity to catch.
+- **Streaming, single process.** Records stream line by line and only the index lives in memory,
+  so a laptop handles millions of short records; there is no multi-process path yet.
+- **Stable codes everywhere.** Reason codes, error codes, exit codes and log event names are part
+  of the interface and covered by tests, so shell pipelines and dashboards can branch on them.
 
 ## Benchmarks
 
-<details>
-<summary>pinecone/core-2020-05-10-deduplication</summary>
+Measured on this machine on 2026-09-29: Apple Silicon Mac (M2, 8 cores, 8 GB RAM), Python 3.12,
+`uv run python -m curator run <spec> --log-level ERROR`, wall-clock as reported by the CLI. Each
+row is one `validate -> dedup` run (`num_perm=128`, 3-grams, threshold 0.8); the 22k set was
+generated with the demo generator's templates (2,000 planted copies) and, because the templates
+share most of their words, the near-duplicate count exceeds the planted one.
 
-| Algorithm                       | Precision (Duplicates) | Recall (Duplicates) | Precision (Non Duplicates) | Recall (Non Duplicates) | Macro F1 score |   Accuracy | Time    |
-| :------------------------------ | ---------------------: | ------------------: | -------------------------: | ----------------------: | -------------: | ---------: | :------ |
-| MinHash                         |                 0.9587 |              0.9416 |                     0.9450 |                  0.9611 |     **0.9518** | **0.9277** | 11.09s  |
-| SimHash                         |                 0.9038 |              0.7323 |                     0.7993 |                  0.9318 |         0.8515 |     0.8375 | 626.11s |
-| Exact Title Matching [^1]       |                  0.830 |                0.50 |                      0.709 |                   0.992 |          0.757 |      0.746 | -       |
-| Simhash Matching [^1]           |                  0.697 |               0.247 |                      0.598 |                   0.985 |          0.631 |      0.616 | -       |
-| Document Vector Similarity [^1] |                  0.912 |               0.779 |                      0.861 |                   0.986 |          0.885 |      0.883 | -       |
-| Hybrid Method [^1]              |                  0.908 |               0.828 |                      0.899 |                   0.979 |          0.904 |      0.903 | -       |
-| LaBSE[^2]                       |                  0.937 |               0.923 |                      0.930 |                   0.943 |          0.933 |      0.919 | -       |
-| Multilingual USE[^2]            |                  0.917 |               0.907 |                      0.918 |                   0.927 |          0.917 |      0.909 | -       |
-| Multilingual E5-Base[^2]        |                  0.931 |               0.908 |                      0.919 |                   0.939 |          0.924 |      0.920 | -       |
-| MinHash + LSH[^2]               |                  0.929 |               0.902 |                      0.915 |                   0.938 |          0.921 |      0.918 | -       |
-| RETSim Partial-Dup[^2]          |                  0.945 |               0.941 |                      0.945 |                   0.949 |          0.945 |      0.928 | -       |
-| RETSim Near-Dup[^2]             |                  0.928 |               0.937 |                      0.942 |                   0.934 |          0.935 |      0.926 | -       |
+| Dataset | Records in | Kept | Runs | Wall-clock | Throughput |
+| --- | --- | --- | --- | --- | --- |
+| `examples/sft-demo.yaml` (bundled) | 299 | 220 | 3 | 0.060-0.065 s | 4,600-5,000 records/s |
+| 22k templated SFT records (not bundled) | 22,000 | 18,512 | 3 | 4.0-5.7 s | 3,800-5,500 records/s |
 
-</details>
-<details>
-<summary>NEWS-COPY</summary>
+`make demo` end to end (including interpreter start-up) takes 0.46 s (`/usr/bin/time -p`). The
+22k runs overlapped a Docker image build on the same machine, hence the spread. Full test suite:
+672 tests in about 13 s, 84% line coverage (`make test`).
 
-Adjusted Rand Index (ARI) on NEWS-COPY dataset:
+## What I would do next
 
-| Model/Algorithm          | ARI       | Time    |
-| :----------------------- | :-------- | :------ |
-| MinHash                  | 0.7293    | 3.01s   |
-| SimHash                  | 0.6463    | 140.03s |
-| n-gram [^3]              | 0.440     | -       |
-| SimHash[^2]              | 0.695     | -       |
-| MinHash[^3]              | 0.737     | -       |
-| MinHash[^2]              | 0.783     | -       |
-| Multilingual USE[^2]     | 0.730     | -       |
-| Multilingual E5-Base[^2] | 0.742     | -       |
-| S-BERT[^3]               | 0.700     | -       |
-| RETSim Partial-Dup[^2]   | 0.831     | -       |
-| RETSim Near-Dup[^2]      | 0.704     | -       |
-| Re-ranking [^3]          | **0.937** | -       |
-| Bi-encoder [^3]          | 0.915     | -       |
+- A SQLite run ledger keyed by spec hash and input digest, so re-running an unchanged pipeline is a
+  no-op and each output can be traced to its inputs.
+- PII and secret scrubbing as a stage (emails, phone numbers, API keys), with the same
+  quarantine-or-rewrite semantics as `validate`.
+- A quality validator registry (length bounds, language, refusal and boilerplate detection) that
+  specs can compose per field.
+- A seeded synthetic data generator behind the same schemas, so a pipeline can be exercised at any
+  size, plus a report and dataset card written next to the output.
+- A Typer CLI with rich progress and a FastAPI job service that runs specs asynchronously and
+  serves the reports.
+- Hermetic CI (no PyPI access after `uv sync --frozen`) and property-based tests with `hypothesis`
+  for the normaliser and the schemas.
 
-</details>
-
-### Running Benchmarks
-
-You can reproduce the benchmark results using the provided benchmark suite.
-
-#### Quick Start with Just
+## Development
 
 ```bash
-# Run all benchmarks (both datasets, all algorithms)
-just benchmark-all
-
-# Run only CORE dataset benchmarks
-just benchmark-core
-
-# Run only NEWS-COPY dataset benchmarks
-just benchmark-news
-
-# Run specific algorithm on specific dataset
-just benchmark-core-minhash
-just benchmark-core-simhash
-just benchmark-news-minhash
-just benchmark-news-simhash
+make install     # uv sync
+make lint        # ruff check + ruff format --check
+make typecheck   # mypy over src/ (stricter for curator.*)
+make test        # pytest with coverage: tests/ plus src doctests
+make ci          # lint, typecheck, test
+uv run pre-commit install   # optional hygiene hooks; the upstream justfile is also kept
 ```
 
-#### Configuration Files
+`text_dedup.suffix_array` shells out to Google's
+[deduplicate-text-datasets](https://github.com/google-research/deduplicate-text-datasets) (Rust,
+git submodule under `third_party/`). Nothing in the curation pipeline or the tests needs it; to
+enable it run `git submodule update --init third_party/deduplicate-text-datasets` and install a
+Rust toolchain. Ruff, mypy and pytest never enter `third_party/`.
 
-Benchmark configuration files are located in `configs/`:
+## Repository layout
 
-- `benchmark_core_minhash.toml` - MinHash on CORE dataset
-- `benchmark_core_simhash.toml` - SimHash on CORE dataset
-- `benchmark_news_minhash.toml` - MinHash on NEWS-COPY dataset
-- `benchmark_news_simhash.toml` - SimHash on NEWS-COPY dataset
+| Path | Contents | Origin |
+| --- | --- | --- |
+| `src/curator/` | `cli.py`, `pipeline.py`, `config/`, `schemas/`, `stages/`, `dedup/`, `io/`, `errors.py`, `log.py` | this fork |
+| `examples/` | Pipeline specs, the seeded demo generator and sample datasets with planted defects | this fork |
+| `Makefile`, `Dockerfile`, `docker-compose.yml`, `.github/workflows/main.yml` | Developer entry points, runtime image, CI | this fork (CI extended from upstream) |
+| `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |
+| `benchmarks/`, `report/`, `configs/`, `justfile` | Upstream benchmark harness, report app and configs | upstream text-dedup |
+| `third_party/deduplicate-text-datasets` | Optional Rust suffix-array backend (git submodule) | Google Research |
 
-To customize benchmark parameters, edit the config files and adjust hyperparameters like `num_perm`, `threshold`, `ngram_size`, or `bit_diff`.
+Both `curator` and `text_dedup` ship in the single `sft-data-curator` wheel.
 
-[^1]: [Deduplication of Scholarly Documents using Locality Sensitive Hashing and Word Embeddings](https://aclanthology.org/2020.lrec-1.113)
-[^2]: [RETSim: Resilient and Efficient Text Similarity](https://arxiv.org/abs/2311.17264)
-[^3]: [Noise-Robust De-Duplication at Scale](https://www.semanticscholar.org/paper/Noise-Robust-De-Duplication-at-Scale-Silcock-D'Amico-Wong/7ca41cc5fc364b713aba5b573ae4ada801fd788a)
+## License and credits
 
-## License
-
-[Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0.html)
-
-## Citations
-
-Generally, you can cite this repository as:
+Apache 2.0, see [LICENSE](LICENSE); the upstream copyright is kept. `text_dedup`, the benchmarks
+and the report app are the work of Chenghao Mou and the text-dedup contributors, whose
+[README](https://github.com/ChenghaoMou/text-dedup#readme) and
+[documentation](https://chenghaomou.github.io/text-dedup/) describe the upstream algorithms and
+their own benchmark results. Cite upstream when you use the deduplication algorithms:
 
 ```bibtex
 @software{chenghao_mou_2023_8364980,
@@ -545,11 +353,7 @@ Generally, you can cite this repository as:
 }
 ```
 
-## Acknowledgements
-
-This repository is inspired by the following projects, and is heavily influenced by lessons learned from my own participation in [BigScience (Apache 2.0)](https://github.com/bigscience-workshop) and [BigCode (Apache 2.0)](https://github.com/bigcode-project). There is a [blog post](https://publish.obsidian.md/chenghao/posts/20230220150602) about the journey. Feedbacks are welcome!
-
-- [Datasketch](https://github.com/ekzhu/datasketch) (MIT)
-- [simhash-py](https://github.com/seomoz/simhash-py/tree/master/simhash) and [simhash-cpp](https://github.com/seomoz/simhash-cpp) (MIT)
-- [Deduplicating Training Data Makes Language Models Better](https://github.com/google-research/deduplicate-text-datasets) (Apache 2.0)
-- [Gaoya](https://github.com/serega/gaoya) (MIT)
+Upstream acknowledges [Datasketch](https://github.com/ekzhu/datasketch) (MIT),
+[simhash-py](https://github.com/seomoz/simhash-py) and [simhash-cpp](https://github.com/seomoz/simhash-cpp)
+(MIT), [deduplicate-text-datasets](https://github.com/google-research/deduplicate-text-datasets)
+(Apache 2.0) and [Gaoya](https://github.com/serega/gaoya) (MIT).
