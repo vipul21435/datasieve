@@ -113,14 +113,26 @@ def test_with_record_id_fills_the_id_once() -> None:
     assert filled.with_record_id() is filled
 
 
-def test_to_json_dict_keeps_the_input_shape_with_id_first_and_metadata_last() -> None:
+def test_to_json_dict_mirrors_the_input_key_order_with_id_first() -> None:
     raw = {"metadata": {"source": "x"}, "response": "4", "prompt": "What is 2+2?"}
     record = parse_record(raw, "sft").with_record_id()
 
     out = record.to_json_dict()
 
-    assert list(out) == ["id", "prompt", "response", "metadata"]
-    assert "system" not in out
+    assert list(out) == ["id", "metadata", "response", "prompt"]
+    assert out == {"id": record.content_id(), **raw}
+
+
+def test_preference_round_trip_is_unchanged_apart_from_the_id() -> None:
+    raw = {"prompt": "q", "chosen": "a", "rejected": "b", "score_chosen": 1.5, "score_rejected": 0.5, "id": "p-1"}
+    out = parse_record(raw, "preference").to_json_dict()
+    assert list(out) == ["id", "prompt", "chosen", "rejected", "score_chosen", "score_rejected"]
+    assert out == raw
+
+
+def test_moved_unknown_fields_serialise_inside_metadata() -> None:
+    record = parse_record(SFT | {"source": "gsm8k"}, "sft", unknown_fields="metadata")
+    assert record.to_json_dict() == SFT | {"metadata": {"source": "gsm8k"}}
 
 
 def test_defaults_are_not_added_to_the_output() -> None:

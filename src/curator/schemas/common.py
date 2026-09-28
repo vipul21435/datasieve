@@ -23,6 +23,9 @@ from pydantic import BeforeValidator
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import JsonValue
+from pydantic import ModelWrapValidatorHandler
+from pydantic import PrivateAttr
+from pydantic import model_validator
 from pydantic_core import PydanticCustomError
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -155,6 +158,17 @@ class RecordBase(StrictModel):
     id: RecordId | None = None
     metadata: Metadata = Field(default_factory=dict)
 
+    # Key order of the input mapping, so serialisation can mirror it.
+    _input_keys: tuple[str, ...] = PrivateAttr(default=())
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _remember_key_order(cls, data: object, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        record = handler(data)
+        if isinstance(data, dict):
+            record._input_keys = tuple(str(key) for key in data)
+        return record
+
     @abstractmethod
     def canonical_content(self) -> dict[str, JsonValue]:
         """The training content in one normalised shape, used for the content id."""
@@ -174,16 +188,16 @@ class RecordBase(StrictModel):
         return self if self.id is not None else self.model_copy(update={"id": self.content_id()})
 
     def to_json_dict(self) -> dict[str, JsonValue]:
-        """Serialise for JSONL output, keeping exactly the fields the input set.
+        """Serialise for JSONL output in the input's shape.
 
-        Defaults the input left out (``metadata``, a message ``name``, ...) are
-        not added, so a validated record keeps its original shape. ``id`` comes
-        first and ``metadata`` last, whatever the input order was.
+        Only fields the input set are written (no ``metadata: {}`` or
+        ``name: null`` is added), in the input's key order, with ``id`` first.
+        A record read from JSON and written back is therefore unchanged apart
+        from a filled-in ``id``.
         """
         data = self.model_dump(mode="json", exclude_unset=True)
-        head = {"id": data.pop("id")} if "id" in data else {}
-        tail = {"metadata": data.pop("metadata")} if "metadata" in data else {}
-        return head | data | tail
+        position = {key: index for index, key in enumerate(self._input_keys)}
+        return dict(sorted(data.items(), key=lambda item: (item[0] != "id", position.get(item[0], len(position)))))
 
 
 __all__ = [
