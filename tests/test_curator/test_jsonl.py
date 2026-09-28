@@ -53,6 +53,8 @@ def test_loads_strict_accepts_standard_json() -> None:
         ('{"score": NaN}', "non_finite_number"),
         ('{"score": Infinity}', "non_finite_number"),
         ('{"score": -Infinity}', "non_finite_number"),
+        ('{"score": 1e400}', "non_finite_number"),
+        ('{"score": -1e999}', "non_finite_number"),
     ],
 )
 def test_loads_strict_rejects_silent_footguns(text: str, code: str) -> None:
@@ -70,6 +72,14 @@ def test_encode_json_line_keeps_non_ascii_text_readable() -> None:
     line = encode_json_line({"text": "caf\u00e9 \u4f60\u597d"})
     assert line == '{"text": "caf\u00e9 \u4f60\u597d"}\n'.encode()
     assert json.loads(line) == {"text": "caf\u00e9 \u4f60\u597d"}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_non_finite_floats_are_never_written(value: float) -> None:
+    with pytest.raises(ValueError, match="Out of range float"):
+        encode_json_line({"score": value})
+    with pytest.raises(ValueError, match="Out of range float"):
+        encode_json_line_lossless({"text": "\ud800", "score": value})
 
 
 def test_lone_surrogates_fail_strict_encoding_but_not_lossless_encoding() -> None:

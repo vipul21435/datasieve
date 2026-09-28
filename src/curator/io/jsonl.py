@@ -3,8 +3,11 @@
 * :func:`read_lines` streams a file as ``(line number, bytes)`` pairs, so a
   stage can report undecodable lines instead of crashing on them.
 * :func:`loads_strict` is ``json.loads`` minus two silent footguns: duplicate
-  object keys (the last one would win) and the non-standard ``NaN`` /
-  ``Infinity`` constants.
+  object keys (the last one would win) and non-finite numbers, whether
+  spelled as the non-standard ``NaN`` / ``Infinity`` constants or as a
+  literal such as ``1e400`` that overflows a float.
+* :func:`encode_json_line` never writes ``NaN`` / ``Infinity``, so every line
+  it produces is standard JSON that :func:`loads_strict` reads back.
 * :class:`AtomicFile` writes to a temporary file next to the target and only
   replaces the target on :meth:`~AtomicFile.commit`, so readers never see a
   half-written output and a failed run leaves no partial file behind.
@@ -13,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
 from collections.abc import Generator
@@ -49,11 +53,21 @@ def _reject_constant(name: str) -> NoReturn:
     raise StrictJSONError("non_finite_number", f"{name} is not valid JSON")
 
 
+def _finite_float(literal: str) -> float:
+    value = float(literal)
+    if not math.isfinite(value):
+        shown = literal if len(literal) <= 32 else f"{literal[:29]}..."
+        raise StrictJSONError("non_finite_number", f"number {shown} is out of range for a 64-bit float")
+    return value
+
+
 def loads_strict(text: str) -> object:
     """Decode ``text`` as standard JSON.
 
     Raises ``json.JSONDecodeError`` for malformed JSON and
-    :class:`StrictJSONError` for duplicate keys or ``NaN``/``Infinity``.
+    :class:`StrictJSONError` for duplicate keys or non-finite numbers
+    (``NaN``, ``Infinity``, or a literal like ``1e400`` that would decode to
+    infinity).
 
     >>> loads_strict('{"a": [1, 2.5, null]}')
     {'a': [1, 2.5, None]}
@@ -62,24 +76,30 @@ def loads_strict(text: str) -> object:
     ...
     curator.io.jsonl.StrictJSONError: duplicate key 'a'
     """
-    return json.loads(text, object_pairs_hook=_object_without_duplicate_keys, parse_constant=_reject_constant)
+    return json.loads(
+        text,
+        object_pairs_hook=_object_without_duplicate_keys,
+        parse_constant=_reject_constant,
+        parse_float=_finite_float,
+    )
 
 
 def encode_json_line(obj: object) -> bytes:
     """Serialise ``obj`` as one UTF-8 JSON line (non-ASCII text kept readable).
 
     Raises ``UnicodeEncodeError`` if a string holds a lone surrogate, which
-    has no UTF-8 encoding.
+    has no UTF-8 encoding, and ``ValueError`` for a NaN or infinite float,
+    which has no standard JSON spelling.
     """
-    return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+    return (json.dumps(obj, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
 
 
 def encode_json_line_lossless(obj: object) -> bytes:
-    """Like :func:`encode_json_line`, but falls back to ``\\uXXXX`` escapes instead of failing."""
+    """Like :func:`encode_json_line`, but writes lone surrogates as ``\\uXXXX`` escapes instead of failing."""
     try:
         return encode_json_line(obj)
     except UnicodeEncodeError:
-        return (json.dumps(obj, ensure_ascii=True) + "\n").encode("ascii")
+        return (json.dumps(obj, ensure_ascii=True, allow_nan=False) + "\n").encode("ascii")
 
 
 def read_lines(path: Path) -> Generator[tuple[int, bytes]]:
