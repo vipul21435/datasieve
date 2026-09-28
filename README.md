@@ -40,6 +40,20 @@ Everything below is fork work (`git log --author=vipul21435@iiitd.ac.in`); `src/
   the same input is byte-identical, a later batch skips what earlier batches delivered (reported
   as `seen` with the earlier run id), and `python -m curator ledger stats|collisions` lists the
   runs and the ids or contents that disagree across batches.
+- **PII and secret detectors** (`curator.pii`): a library, usable on its own like `curator.dedup`,
+  with detectors for emails, phone numbers, IPv4/IPv6, Luhn-checked card numbers and API keys or
+  tokens (known prefixes plus long high-entropy tokens); `detect()` resolves overlapping spans by
+  priority and `scrub()` replaces each one with a typed placeholder such as `[EMAIL]` and counts
+  detections per kind. False-positive guards (version strings, times, MAC addresses, hex digests,
+  UUIDs, numbers that fail Luhn, separator-free digit runs) are pinned by seeded tests. The
+  `scrub` pipeline stage that composes it is the next slice.
+
+  ```python
+  from curator.pii import scrub
+  result = scrub("mail a@b.io, key sk-abcdefghijklmnopqrstuv, host 10.0.0.1")
+  result.text    # 'mail [EMAIL], key [API_KEY], host [IPV4]'
+  result.counts  # {'email': 1, 'api_key': 1, 'ipv4': 1}
+  ```
 - **A pipeline runner and CLI** (`curator.pipeline`, `curator.cli`): stages chain through the
   run directory and `python -m curator run` prints the stage funnel or a JSON report.
 - **Structured logging and an error hierarchy** (`curator.log`, `curator.errors`): JSON log lines
@@ -368,15 +382,15 @@ pays the SQLite import, the digest of the input bytes and the connection open pl
 `make demo` end to end (including interpreter start-up) takes 0.59-0.74 s (`/usr/bin/time -p`,
 6 runs); a second machine under load measured every number here about 1.5x slower, so treat them
 as an idle-machine floor. The 22k runs overlapped a Docker image build on the same machine, hence
-the spread. Full test suite: 688 tests in about 17 s with coverage, 86% line coverage
+the spread. Full test suite: 756 tests in about 12-17 s with coverage, 86% line coverage
 (`make test`).
 
 ## What I would do next
 
 - A `--since RUN` option for `ledger stats` and a `ledger runs --prune` command, so a ledger that
   outlives its batches can be trimmed.
-- PII and secret scrubbing as a stage (emails, phone numbers, API keys), with the same
-  quarantine-or-rewrite semantics as `validate`.
+- A `scrub` stage over `curator.pii` with scrub (rewrite in place) and quarantine modes, per-detector
+  counts in the funnel and reason codes, and planted PII in the demo dataset.
 - A quality validator registry (length bounds, language, refusal and boilerplate detection) that
   specs can compose per field.
 - A seeded synthetic data generator behind the same schemas, so a pipeline can be exercised at any
@@ -407,7 +421,7 @@ Rust toolchain. Ruff, mypy and pytest never enter `third_party/`.
 
 | Path | Contents | Origin |
 | --- | --- | --- |
-| `src/curator/` | `cli.py`, `pipeline.py`, `ledger.py`, `config/`, `schemas/`, `stages/`, `dedup/`, `io/`, `errors.py`, `log.py` | this fork |
+| `src/curator/` | `cli.py`, `pipeline.py`, `ledger.py`, `config/`, `schemas/`, `stages/`, `dedup/`, `pii/`, `io/`, `errors.py`, `log.py` | this fork |
 | `examples/` | Pipeline specs, the seeded demo generator and sample datasets with planted defects | this fork |
 | `Makefile`, `Dockerfile`, `docker-compose.yml`, `.github/workflows/main.yml` | Developer entry points, runtime image, CI | this fork (CI extended from upstream) |
 | `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |
