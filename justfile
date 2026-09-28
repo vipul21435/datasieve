@@ -27,7 +27,7 @@ check:
 
 test:
     @echo "Testing code: Running pytest"
-    {{uvr}} python -m pytest --doctest-modules --ignore=third_party --cov --cov-config=pyproject.toml --cov-report=xml --cov-report=term-missing
+    {{uvr}} pytest --cov --cov-config=pyproject.toml --cov-report=xml --cov-report=term-missing
 
 tox:
     @echo "Running tox across Python 3.12, 3.13"

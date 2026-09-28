@@ -108,15 +108,13 @@ reportUnknownMemberType = false
 reportMissingTypeStubs = false
 reportUnusedCallResult = false
 
-[tool.pytest]
-addopts = [
-  "--cov-config=.coveragerc",
-  "--cov-report=html",
-  "--cov-report=term-missing",
-  "--cov-report=xml",
-  "--cov=src",
-]
-testpaths = ["tests"]
+[tool.pytest.ini_options]
+# pytest < 9 ignores a bare [tool.pytest] table, so the options must live here.
+# Coverage is opt-in (pass --cov explicitly, as CI and `just test` do).
+addopts = ["-ra", "--strict-markers", "--doctest-modules"]
+testpaths = ["tests", "src"]
+# Repo root on sys.path so tests can import the top-level `benchmarks` package.
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py312"
