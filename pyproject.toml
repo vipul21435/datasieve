@@ -1,11 +1,15 @@
 [project]
-name = "text-dedup"
-version = "0.4.1"
-description = "All-in-one text deduplication tools"
+# Fork of text-dedup (https://github.com/ChenghaoMou/text-dedup). The wheel ships
+# both the upstream `text_dedup` package and the fork's `curator` package.
+name = "sft-data-curator"
+version = "0.1.0"
+description = "Training-data curation for SFT and preference data, built on text-dedup"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
+# Upstream author of `text_dedup`; the fork's maintainer is listed separately.
 authors = [{ name = "Chenghao Mou", email = "mouchenghao@gmail.com" }]
-keywords = ["python"]
+maintainers = [{ name = "vipul21435" }]
+keywords = ["deduplication", "data-curation", "sft", "preference-data", "llm"]
 classifiers = [
   "Intended Audience :: Developers",
   "Programming Language :: Python",
@@ -32,9 +36,10 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://ChenghaoMou.github.io/text-dedup/"
-Homepage = "https://ChenghaoMou.github.io/text-dedup/"
-Repository = "https://github.com/ChenghaoMou/text-dedup"
+Homepage = "https://github.com/vipul21435/sft-data-curator"
+Repository = "https://github.com/vipul21435/sft-data-curator"
+Upstream = "https://github.com/ChenghaoMou/text-dedup"
+"Upstream Documentation" = "https://ChenghaoMou.github.io/text-dedup/"
 
 [project.optional-dependencies]
 datasets = []
@@ -61,6 +66,10 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The distribution name no longer matches a package dir, so list both explicitly.
+packages = ["src/text_dedup", "src/curator"]
 
 [tool.bandit]
 exclude = ["tests/*"]
@@ -102,6 +111,15 @@ no_implicit_optional = true
 check_untyped_defs = true
 warn_return_any = true
 warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# The fork's own package is held to a stricter bar than the upstream code.
+module = ["curator", "curator.*"]
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+strict_equality = true
+warn_unreachable = true
 
 [tool.pyright]
 reportUnknownMemberType = false
