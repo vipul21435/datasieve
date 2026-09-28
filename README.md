@@ -1,3 +1,65 @@
+# sft-data-curator
+
+Training-data curation for SFT and preference (chosen/rejected) datasets, built as a fork of
+[ChenghaoMou/text-dedup](https://github.com/ChenghaoMou/text-dedup). The upstream `text_dedup`
+package is kept intact and reused for near-duplicate detection; the fork's own code lives in the
+new `curator` package. Everything runs on CPU and needs no paid API keys.
+
+> Status: tooling baseline. The package layout, CI and test setup are in place; the curation
+> stages (schema validation, PII scrubbing, quality filters, synthetic data, dataset cards, CLI
+> and API) land in follow-up changes.
+
+## Repository layout
+
+| Path | Contents | Origin |
+| --- | --- | --- |
+| `src/curator/` | Curation pipeline | this fork |
+| `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |
+| `benchmarks/`, `report/` | Dedup benchmarks and report app | upstream text-dedup |
+| `third_party/deduplicate-text-datasets` | Optional Rust suffix-array backend (git submodule) | Google Research |
+
+Both `curator` and `text_dedup` ship in the single `sft-data-curator` wheel.
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/); Python 3.12 is selected via `.python-version`.
+
+```bash
+uv sync                                  # runtime + dev dependencies, pinned by uv.lock
+uv run pytest                            # unit tests and src doctests
+uv run ruff check . && uv run ruff format --check .
+uv run mypy                              # src/, with stricter settings for curator.*
+uv run pre-commit install                # optional: ruff + hygiene hooks on commit
+```
+
+### Optional: suffix-array backend
+
+`text_dedup.suffix_array` shells out to Google's
+[deduplicate-text-datasets](https://github.com/google-research/deduplicate-text-datasets) (Rust).
+It is not needed to install the package, run the tests or use the curation pipeline, and a plain
+clone leaves the submodule empty. To enable it:
+
+```bash
+git submodule update --init third_party/deduplicate-text-datasets
+# and install a Rust toolchain so that `cargo` is on PATH (https://rustup.rs)
+```
+
+Without both, the suffix-array algorithm stops before doing any work with a
+`SuffixArrayBackendError` that names what is missing.
+
+## License and credits
+
+Apache 2.0, see [LICENSE](LICENSE). `text_dedup`, the benchmarks and the report app are the work
+of Chenghao Mou and the text-dedup contributors; cite upstream (see Citations below) when you use
+the deduplication algorithms.
+
+---
+
+# Upstream README: text-dedup
+
+The rest of this file is the upstream project's README, kept as-is. Its install and run
+instructions refer to the upstream repository.
+
 <center><img src="./banner.png"/ style="background-color:white;"></center>
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue) ![GitHub](https://img.shields.io/github/license/ChenghaoMou/text-dedup) [![Codacy Badge](https://app.codacy.com/project/badge/Grade/cc66178e49d24908ac1fb2b2dbe4e5b3)](https://www.codacy.com/gh/ChenghaoMou/text-dedup/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ChenghaoMou/text-dedup&utm_campaign=Badge_Grade) [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/cc66178e49d24908ac1fb2b2dbe4e5b3)](https://www.codacy.com/gh/ChenghaoMou/text-dedup/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ChenghaoMou/text-dedup&utm_campaign=Badge_Coverage) [![DOI](https://zenodo.org/badge/347428086.svg)](https://zenodo.org/badge/latestdoi/347428086)
