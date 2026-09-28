@@ -206,3 +206,8 @@ def test_scrub_is_deterministic_over_seeded_corpus() -> None:
 
 def test_kinds_cover_every_detector() -> None:
     assert set(KINDS) == {"email", "api_key", "credit_card", "ipv6", "ipv4", "phone"}
+
+
+def test_bare_string_kinds_selects_that_single_detector() -> None:
+    assert [d.kind for d in detect("a@b.io from 10.0.0.1", kinds="email")] == ["email"]
+    assert scrub("a@b.io from 10.0.0.1", kinds="ipv4").text == "a@b.io from [IPV4]"

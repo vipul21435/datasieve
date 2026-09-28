@@ -226,6 +226,8 @@ def detect(text: str, kinds: Iterable[str] = KINDS) -> list[Detection]:
     >>> [d.kind for d in detect("mail a@b.io or call +1 415-555-0100")]
     ['email', 'phone']
     """
+    if isinstance(kinds, str):  # a bare "email" would otherwise be iterated per character
+        kinds = (kinds,)
     found: list[Detection] = []
     for kind in kinds:
         if kind not in DETECTORS:
