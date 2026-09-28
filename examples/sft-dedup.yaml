@@ -1,0 +1,27 @@
+# Validate an SFT dataset, then drop exact duplicates, near duplicates and records
+# that overlap an evaluation split. Run it with curator.pipeline.run_pipeline (see
+# the README); the files land in <CURATOR_WORK_DIR>/sft-dedup-demo.
+version: 1
+name: sft-dedup-demo
+description: SFT records with planted exact, near and contaminated duplicates.
+input:
+  path: data/sft_dedup_sample.jsonl
+  kind: sft
+stages:
+  - stage: validate
+    # Keep provenance fields such as "source" by moving them into metadata.
+    unknown_fields: metadata
+  - stage: dedup
+    # Compare every text field (prompt and response for SFT), lower-cased with
+    # whitespace collapsed. Exact matches are found by content hash.
+    near:
+      # Word 3-gram Jaccard similarity that makes a near duplicate. MinHash/LSH
+      # proposes the pairs and the exact similarity decides; a pair right at the
+      # threshold is proposed with only even odds, so leave a margin.
+      threshold: 0.8
+      seed: 42
+    reference:
+      # Records matching this split (exactly, or at the threshold above) are
+      # dropped as contaminated. Lines may be records or plain objects with the
+      # compared fields as strings.
+      path: data/sft_eval_sample.jsonl
