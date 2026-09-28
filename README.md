@@ -264,7 +264,7 @@ for API bodies and logs, and an exit code from `sysexits.h` (see the CLI referen
 {
   "pipeline": "sft-demo-300",
   "input": "examples/data/sft_demo.jsonl",
-  "output": ".curator/sft-demo-300/deduped.jsonl",
+  "output": ".curator/sft-demo-300/unseen.jsonl",
   "stages": [
     {"stage": "validate", "total": 299, "valid": 287, "invalid": 12, "invalid_fraction": 0.040134,
      "reasons": {"blank_text": 2, "consecutive_same_role": 1, "duplicate_id": 1, "duplicate_key": 1,
