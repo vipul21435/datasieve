@@ -17,6 +17,7 @@ from curator.errors import QuarantineThresholdError
 from curator.errors import RecordValidationError
 from curator.errors import SettingsError
 from curator.errors import SpecError
+from curator.errors import StageInputError
 from curator.schemas.issues import RecordIssue
 
 ALL_ERRORS: list[CuratorError] = [
@@ -28,6 +29,7 @@ ALL_ERRORS: list[CuratorError] = [
     InputFileError("missing input", path=Path("in.jsonl")),
     RecordValidationError([RecordIssue("missing", "prompt", "Field required")]),
     QuarantineThresholdError(stage="validate", invalid=3, total=4, max_fraction=0.5, quarantine_path=Path("q.jsonl")),
+    StageInputError("line 3 is not a record", stage="dedup", line=3, path=Path("validated.jsonl")),
 ]
 
 
@@ -57,6 +59,7 @@ def test_codes_are_unique_per_class() -> None:
         (InputFileError, EX_NOINPUT),
         (RecordValidationError, EX_DATAERR),
         (QuarantineThresholdError, EX_DATAERR),
+        (StageInputError, EX_DATAERR),
     ],
 )
 def test_exit_codes_follow_sysexits(error_type: type[CuratorError], exit_code: int) -> None:
@@ -69,6 +72,7 @@ def test_hierarchy_lets_callers_catch_by_failure_class() -> None:
     assert issubclass(InputFileError, DataError)
     assert issubclass(RecordValidationError, DataError)
     assert issubclass(QuarantineThresholdError, DataError)
+    assert issubclass(StageInputError, DataError)
     assert not issubclass(DataError, ConfigError)
 
 
@@ -98,3 +102,10 @@ def test_quarantine_threshold_error_reports_fraction() -> None:
     assert "3/4 records (75.0%)" in str(error)
     assert "limit of 50.0%" in str(error)
     assert error.details["invalid_fraction"] == 0.75
+
+
+def test_stage_input_error_locates_the_line() -> None:
+    error = StageInputError("not a record", stage="dedup", line=7, path=Path("out/validated.jsonl"))
+    assert (error.stage, error.line, error.path) == ("dedup", 7, Path("out/validated.jsonl"))
+    assert error.details == {"stage": "dedup", "line": 7, "path": "out/validated.jsonl"}
+    assert "path" not in StageInputError("x", stage="dedup", line=1).details

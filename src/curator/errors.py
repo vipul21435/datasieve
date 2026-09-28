@@ -14,6 +14,7 @@ failure classes apart:
         +-- InputFileError          an input file is missing/unreadable (exit 66)
         +-- RecordValidationError   one record fails its schema
         +-- QuarantineThresholdError too many records were quarantined
+        +-- StageInputError         a stage's input file holds an unexpected line
 
 Each class carries a stable machine-readable ``code`` and a process
 ``exit_code`` (1 for the base class, otherwise taken from BSD ``sysexits.h``)
@@ -160,6 +161,27 @@ class QuarantineThresholdError(DataError):
         self.quarantine_path = quarantine_path
 
 
+class StageInputError(DataError):
+    """A stage's input file holds a line that is not what the stage expects.
+
+    Stages after ``validate`` expect one valid record per line, so this usually
+    means a stage was pointed at raw data instead of the validated file. The
+    ``dedup`` stage also raises it for a reference-set line that is neither a
+    record nor an object with the text fields as strings.
+    """
+
+    code = "stage_input_invalid"
+
+    def __init__(self, message: str, *, stage: str, line: int, path: Path | None = None) -> None:
+        details: dict[str, object] = {"stage": stage, "line": line}
+        if path is not None:
+            details["path"] = str(path)
+        super().__init__(message, details=details)
+        self.stage = stage
+        self.line = line
+        self.path = path
+
+
 __all__ = [
     "EX_CONFIG",
     "EX_DATAERR",
@@ -173,4 +195,5 @@ __all__ = [
     "RecordValidationError",
     "SettingsError",
     "SpecError",
+    "StageInputError",
 ]
