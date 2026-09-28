@@ -1,3 +1,4 @@
+# check=skip=FromPlatformFlagConstDisallowed
 # DataSieve runtime image: the curator CLI with the bundled demo, no dev tools.
 # The optional Rust suffix-array backend (third_party/) is deliberately not built.
 #
@@ -12,7 +13,9 @@
 # linux/amd64 only: the upstream dependency polars-grouper publishes manylinux
 # wheels for x86_64 but not aarch64, and building it needs a Rust toolchain and
 # more memory than a small VM has. On Apple Silicon Docker runs the image under
-# Rosetta/QEMU; that is fine for the demo and for small datasets.
+# Rosetta/QEMU; that is fine for the demo and for small datasets. The constant
+# platform is deliberate (it keeps 'docker build .' working on arm64 hosts), so
+# the BuildKit lint rule for it is skipped on line 1 instead of warning on every build.
 FROM --platform=linux/amd64 python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
