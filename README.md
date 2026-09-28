@@ -205,8 +205,11 @@ saw is written to `seen.jsonl` with that run's id, the id the content had there 
 it is kept when the earlier run read the same input bytes (a re-run, so `unseen.jsonl` is
 byte-identical) and skipped when it came from a different input (an earlier batch). The ledger
 keeps the first sighting of each `(content, id)` pair, so re-runs do not grow it, and nothing is
-committed until the stage's files are written, so a failed run leaves it untouched. Duplicates
-inside one input pass through: that is the `dedup` stage's job.
+committed until the stage's files are written, so a failed run leaves it untouched. A run holds
+the ledger's write lock from its first record to that commit, so pipelines that share a ledger take
+turns: a run that starts while another is still writing waits 5 s for it, then fails with
+`ledger_error` (exit 65), ledger untouched. Duplicates inside one input pass through: that is the
+`dedup` stage's job.
 
 ```json
 {"line": 2, "id": "c", "digest": "3487b07772598076a67584b6901893ce", "action": "skipped", "seen_run": "ledger-batch-1-20260928T223203Z-018ad048", "seen_id": "b", "seen_source": "examples/data/ledger_batch_1.jsonl"}

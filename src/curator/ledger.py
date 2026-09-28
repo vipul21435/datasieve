@@ -9,7 +9,10 @@ here and inserts the ones it has not seen; ``python -m curator ledger
 stats|collisions`` reads the same file back.
 
 A run's rows are committed together when the run finishes, so a run that
-fails half-way leaves the ledger as it was.
+fails half-way leaves the ledger as it was. A run takes the ledger's write
+lock when it begins, so two runs that share a ledger take turns: the second
+waits up to :data:`DEFAULT_LOCK_TIMEOUT` seconds for the first to finish
+and then fails with :class:`~curator.errors.LedgerError`, ledger untouched.
 """
 
 from __future__ import annotations
@@ -32,6 +35,9 @@ from curator.errors import LedgerError
 
 DEFAULT_LEDGER_NAME: Final = "ledger.sqlite"
 """The ledger file a spec without ``path`` uses, inside ``CURATOR_WORK_DIR``."""
+
+DEFAULT_LOCK_TIMEOUT: Final = 5.0
+"""Seconds a run waits for another run to release the ledger before giving up."""
 
 _SCHEMA: Final = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -184,16 +190,26 @@ class Collision:
 
 
 def _wrap_sqlite(path: Path, exc: sqlite3.Error) -> LedgerError:
+    if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc):
+        message = f"ledger {path} is locked by another run; wait for it to finish or use another ledger path"
+        return LedgerError(f"{message}: {exc}", path=path)
     return LedgerError(f"ledger {path} is unusable: {exc}", path=path)
 
 
 class Ledger:
-    """The ledger file, open for reading and writing. Use as a context manager; changes need :meth:`commit`."""
+    """The ledger file, open for reading and writing. Use as a context manager; changes need :meth:`commit`.
 
-    def __init__(self, path: Path) -> None:
+    The first write (:meth:`begin_run`) opens an ``IMMEDIATE`` transaction,
+    so the run holds the ledger's write lock until :meth:`commit` or
+    :meth:`close`. Another run on the same file waits ``timeout`` seconds for
+    it, then every method raises :class:`~curator.errors.LedgerError`.
+    """
+
+    def __init__(self, path: Path, *, timeout: float | None = None) -> None:
         self.path = path
+        self.timeout = timeout if timeout is not None else DEFAULT_LOCK_TIMEOUT
         try:
-            self._db = sqlite3.connect(path, isolation_level="DEFERRED")
+            self._db = sqlite3.connect(path, timeout=self.timeout, isolation_level="IMMEDIATE")
             self._db.executescript(_SCHEMA)
         except sqlite3.Error as exc:
             raise _wrap_sqlite(path, exc) from exc
@@ -218,12 +234,23 @@ class Ledger:
         self._db.close()
 
     def commit(self) -> None:
-        self._db.commit()
+        """Make the run's rows visible to other runs and release the write lock."""
+        try:
+            self._db.commit()
+        except sqlite3.Error as exc:
+            raise _wrap_sqlite(self.path, exc) from exc
+
+    def _execute(self, sql: str, params: tuple[object, ...]) -> sqlite3.Cursor:
+        try:
+            return self._db.execute(sql, params)
+        except sqlite3.Error as exc:
+            raise _wrap_sqlite(self.path, exc) from exc
 
     # -- writing ------------------------------------------------------------
 
     def begin_run(self, run: RunInfo) -> None:
-        self._db.execute(
+        """Insert the run's row, taking the ledger's write lock until :meth:`commit`."""
+        self._execute(
             "INSERT INTO runs (run_id, pipeline, config_digest, source, source_digest, started_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (run.run_id, run.pipeline, run.config_digest, run.source, run.source_digest, run.started_at),
@@ -231,7 +258,7 @@ class Ledger:
 
     def lookup(self, digest: str) -> Sighting | None:
         """The earliest sighting of ``digest``, or ``None`` when the content is new."""
-        row = self._db.execute(
+        row = self._execute(
             "SELECT r.run_id, r.record_id, u.source, u.source_digest, r.line"
             " FROM records r JOIN runs u ON u.run_id = r.run_id WHERE r.digest = ? ORDER BY r.seq LIMIT 1",
             (digest,),
@@ -240,14 +267,14 @@ class Ledger:
 
     def record(self, digest: str, record_id: str, run_id: str, line: int) -> bool:
         """Remember ``(digest, record_id)`` as first seen by ``run_id``; ``False`` if the pair was already there."""
-        cursor = self._db.execute(
+        cursor = self._execute(
             "INSERT OR IGNORE INTO records (digest, record_id, run_id, line) VALUES (?, ?, ?, ?)",
             (digest, record_id, run_id, line),
         )
         return cursor.rowcount == 1
 
     def finish_run(self, run_id: str, *, total: int, kept: int, skipped: int, rerun: int) -> None:
-        self._db.execute(
+        self._execute(
             "UPDATE runs SET total = ?, kept = ?, skipped = ?, rerun = ? WHERE run_id = ?",
             (total, kept, skipped, rerun, run_id),
         )
@@ -341,6 +368,7 @@ def summarise_collisions(collisions: list[Collision]) -> str:
 
 __all__ = [
     "DEFAULT_LEDGER_NAME",
+    "DEFAULT_LOCK_TIMEOUT",
     "Collision",
     "Ledger",
     "Member",

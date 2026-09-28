@@ -147,7 +147,8 @@ def run_ledger(
     back to ``output_dir``. Raises :class:`~curator.errors.InputFileError`
     if the input cannot be read, :class:`~curator.errors.StageInputError`
     for a line that is not a valid record, :class:`~curator.errors.LedgerError`
-    if the ledger file is not a SQLite database, and
+    if the ledger file is not a SQLite database or another run still holds
+    its write lock after :data:`~curator.ledger.DEFAULT_LOCK_TIMEOUT`, and
     :class:`~curator.errors.ConfigError` if an output would overwrite the input.
     """
     config = config if config is not None else LedgerStageSpec()

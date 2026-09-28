@@ -196,6 +196,31 @@ def test_ledger_reads_fail_loudly_on_a_broken_schema(tmp_path: Path) -> None:
         Ledger(path)
 
 
+def test_a_ledger_locked_by_another_run_fails_fast_with_ledger_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = write_records(tmp_path / "b1.jsonl", BATCH_1)
+    path = tmp_path / "ledger.sqlite"
+    first = run_ledger(source, tmp_path / "one", kind="sft", config=LedgerStageSpec(path=path))
+    holder = sqlite3.connect(path)  # a second run that is still writing
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO runs VALUES ('other', 'p', 'c', 's', 'd', 't', 0, 0, 0, 0)")
+    try:
+        with Ledger(path, timeout=0.05) as ledger, pytest.raises(LedgerError, match="locked by another run") as info:
+            ledger.begin_run(new_run("demo", source, {}))
+        assert info.value.to_dict()["details"] == {"path": str(path)}
+        monkeypatch.setattr("curator.ledger.DEFAULT_LOCK_TIMEOUT", 0.05)
+        with pytest.raises(LedgerError, match="locked by another run"):
+            run_ledger(source, tmp_path / "two", kind="sft", config=LedgerStageSpec(path=path))
+        assert not (tmp_path / "two").exists() or not list((tmp_path / "two").iterdir())
+    finally:
+        holder.rollback()
+        holder.close()
+    with Ledger(path) as ledger:  # the failed run left no trace; the lock is gone
+        assert [run.run_id for run in ledger.runs()] == [first.run_id]
+        assert ledger.stats()["records"] == len(BATCH_1)
+
+
 def test_run_info_and_digests(tmp_path: Path) -> None:
     source = write_records(tmp_path / "b1.jsonl", BATCH_1)
     run = new_run("demo", source, {"k": 1})
