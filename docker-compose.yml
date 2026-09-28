@@ -5,8 +5,6 @@ services:
   demo:
     build: .
     image: datasieve:dev
-    # Same platform the Dockerfile pins; see the note there about polars-grouper.
-    platform: linux/amd64
     environment:
       CURATOR_LOG_FORMAT: text
       CURATOR_LOG_LEVEL: INFO
