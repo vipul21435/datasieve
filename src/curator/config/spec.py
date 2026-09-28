@@ -44,6 +44,8 @@ from pydantic import model_validator
 from pydantic_core import PydanticCustomError
 
 from curator.errors import SpecError
+from curator.io.jsonl import StrictJSONError
+from curator.io.jsonl import loads_strict
 from curator.schemas.issues import issue_from_error
 from curator.schemas.parse import RecordKind
 from curator.schemas.parse import UnknownFieldPolicy
@@ -172,19 +174,6 @@ class _UniqueKeySafeLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-class _DuplicateKeyError(ValueError):
-    pass
-
-
-def _json_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    obj: dict[str, object] = {}
-    for key, value in pairs:
-        if key in obj:
-            raise _DuplicateKeyError(f"duplicate key {key!r}")
-        obj[key] = value
-    return obj
-
-
 def _load_yaml(text: str) -> object:
     return yaml.load(text, Loader=_UniqueKeySafeLoader)  # noqa: S506 - a SafeLoader subclass
 
@@ -194,7 +183,7 @@ def _load_toml(text: str) -> object:
 
 
 def _load_json(text: str) -> object:
-    return json.loads(text, object_pairs_hook=_json_object_without_duplicates)
+    return loads_strict(text)
 
 
 _LOADERS: Final[dict[str, Callable[[str], object]]] = {
@@ -259,7 +248,7 @@ def load_spec(path: str | Path) -> PipelineSpec:
         raise SpecError(f"cannot read pipeline spec {path}: {exc}", path=path) from exc
     try:
         data = loader(text)
-    except (yaml.YAMLError, tomllib.TOMLDecodeError, json.JSONDecodeError, _DuplicateKeyError) as exc:
+    except (yaml.YAMLError, tomllib.TOMLDecodeError, json.JSONDecodeError, StrictJSONError) as exc:
         raise SpecError(f"cannot parse pipeline spec {path}: {exc}", path=path) from exc
     return parse_spec(data, base_dir=path.parent, source=path)
 

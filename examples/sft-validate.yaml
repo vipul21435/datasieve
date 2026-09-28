@@ -1,0 +1,15 @@
+# Validate a small SFT dataset that mixes chat and prompt/response records.
+# Relative paths resolve against this file's directory. Without output.dir, the
+# run writes to <CURATOR_WORK_DIR>/<name> (default: .curator/sft-demo).
+version: 1
+name: sft-demo
+description: Chat and prompt/response SFT records with a few deliberate defects.
+input:
+  path: data/sft_sample.jsonl
+  kind: sft
+stages:
+  - stage: validate
+    # Keep provenance fields such as "source" by moving them into metadata.
+    unknown_fields: metadata
+    # Fail the run if more than half of the records are rejected.
+    max_invalid_fraction: 0.5

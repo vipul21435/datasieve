@@ -1,0 +1,6 @@
+{"id": "pref-001", "prompt": "Explain recursion in one sentence.", "chosen": "Recursion is when a function solves a problem by calling itself on smaller instances of it.", "rejected": "Recursion is a loop.", "score_chosen": 8.5, "score_rejected": 3.0}
+{"id": "pref-002", "prompt": [{"role": "system", "content": "Answer briefly."}, {"role": "user", "content": "Is 91 prime?"}], "chosen": [{"role": "assistant", "content": "No, 91 = 7 * 13."}], "rejected": [{"role": "assistant", "content": "Yes, 91 is prime."}]}
+{"id": "pref-003", "prompt": "Capital of Australia?", "chosen": "Canberra.", "rejected": "Canberra. "}
+{"id": "pref-004", "prompt": "Best sorting algorithm for nearly sorted data?", "chosen": "Insertion sort.", "rejected": "Bogosort.", "score_chosen": 2, "score_rejected": 9}
+{"id": "pref-005", "prompt": "Name a noble gas.", "chosen": "Neon."}
+{"id": "pref-006", "prompt": "What does HTTP 404 mean?", "chosen": "The server could not find the requested resource.", "rejected": "The server crashed.", "metadata": {"annotator": "a17"}}

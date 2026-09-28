@@ -1,0 +1,11 @@
+# Validate a small preference (chosen/rejected) dataset; same spec format, in TOML.
+version = 1
+name = "preference-demo"
+description = "Text and chat preference pairs with a few deliberate defects."
+
+[input]
+path = "data/preference_sample.jsonl"
+kind = "preference"
+
+[[stages]]
+stage = "validate"

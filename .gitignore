@@ -154,3 +154,5 @@ profile.json
 
 # curator run outputs (CURATOR_WORK_DIR default)
 .curator/
+# ...but the small sample datasets used by examples/ and its tests are tracked
+!examples/data/
