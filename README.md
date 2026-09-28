@@ -47,6 +47,10 @@ git submodule update --init third_party/deduplicate-text-datasets
 Without both, the suffix-array algorithm stops before doing any work with a
 `SuffixArrayBackendError` that names what is missing.
 
+The checkout is vendored upstream code: ruff excludes `third_party/` (see `[tool.ruff]` in
+`pyproject.toml`), so the lint and format commands above neither flag nor rewrite it, and the
+default pytest and mypy runs never enter it.
+
 ## License and credits
 
 Apache 2.0, see [LICENSE](LICENSE). `text_dedup`, the benchmarks and the report app are the work

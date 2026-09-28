@@ -138,6 +138,11 @@ pythonpath = ["."]
 target-version = "py312"
 line-length = 120
 fix = true
+# third_party/ holds vendored upstream code (the optional suffix-array backend
+# submodule). Never lint or rewrite it, not even when a tool such as an editor or
+# pre-commit passes one of its files explicitly.
+extend-exclude = ["third_party"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = [
