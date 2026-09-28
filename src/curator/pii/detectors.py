@@ -62,7 +62,13 @@ class ScrubResult:
 
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![\w-])")
 
-_PHONE_RE = re.compile(r"(?<![\w.+-])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?![\w-])")
+# The outer lookarounds also reject a digit group on either side (with an optional separator),
+# so a longer digit run such as a Luhn-failing 16-digit number is never split into a phone.
+_PHONE_RE = re.compile(
+    r"(?<![\w.+-])(?<!\d[\s.-])"
+    r"(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]?\d{3,4}[\s.-]?\d{3,4}"
+    r"(?![\w-])(?![\s.-]?\d)"
+)
 
 _IPV4_RE = re.compile(
     r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\w)(?!\.\d)"

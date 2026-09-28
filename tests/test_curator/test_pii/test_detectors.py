@@ -97,6 +97,17 @@ def test_credit_card_false_positives(text: str) -> None:
     assert detect_credit_cards(text) == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["card 4111 1111 1111 1112", "serial 1234 5678 9012 3456", "ref 1234-5678-9012-3456-7890"],
+)
+def test_luhn_failing_runs_are_not_scrubbed_as_phones(text: str) -> None:
+    result = scrub(text)
+    assert result.text == text
+    assert result.counts == {}
+    assert detect(text) == []
+
+
 def test_credit_card_seeded_luhn_numbers() -> None:
     rng = random.Random(20260929)  # noqa: S311
     for _ in range(50):
