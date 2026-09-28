@@ -75,3 +75,32 @@ def test_dedup_example_runs_as_documented(tmp_path: Path, monkeypatch: pytest.Mo
     ]
     kept = [json.loads(text)["id"] for text in report.output_path.read_text(encoding="utf-8").splitlines()]
     assert kept == ["sft-101", "sft-105", "sft-109"]
+
+
+def test_demo_example_runs_as_documented(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `make demo` dataset: 299 lines, 12 invalid, 220 unique records after dedup."""
+    monkeypatch.chdir(tmp_path)
+    spec = load_spec(EXAMPLES / "sft-demo.yaml")
+
+    report = run_pipeline(spec, work_dir=tmp_path / "work")
+
+    validate, dedup = report.to_dict()["stages"]
+    assert (validate["total"], validate["valid"], validate["invalid"]) == (299, 287, 12)
+    assert (dedup["total"], dedup["kept"], dedup["reference_size"]) == (287, 220, 15)
+    assert dedup["reasons"] == {"contaminated": 12, "exact_duplicate": 30, "near_duplicate": 25}
+
+
+def test_demo_data_is_reproducible() -> None:
+    """examples/make_demo_data.py regenerates the committed files byte for byte."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("make_demo_data", EXAMPLES / "make_demo_data.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    train, evaluation = module.build()
+
+    assert "".join(line + "\n" for line in train) == module.TRAIN_PATH.read_text(encoding="utf-8")
+    assert "".join(line + "\n" for line in evaluation) == module.EVAL_PATH.read_text(encoding="utf-8")
+    assert len(train) == 299 and len(evaluation) == 15

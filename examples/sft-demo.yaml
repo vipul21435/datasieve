@@ -1,0 +1,20 @@
+# The `make demo` pipeline: validate a seeded SFT dataset with planted defects,
+# then drop exact duplicates, near duplicates and records that overlap the
+# evaluation split. Regenerate the data with `python examples/make_demo_data.py`.
+version: 1
+name: sft-demo-300
+description: 300-odd SFT records with planted exact, near and contaminated duplicates and invalid rows.
+input:
+  path: data/sft_demo.jsonl
+  kind: sft
+stages:
+  - stage: validate
+    # The "source" field records which defect was planted; keep it as metadata.
+    unknown_fields: metadata
+    max_invalid_fraction: 0.25
+  - stage: dedup
+    near:
+      threshold: 0.8
+      seed: 42
+    reference:
+      path: data/sft_demo_eval.jsonl
