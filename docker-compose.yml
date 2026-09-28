@@ -1,0 +1,19 @@
+# docker compose run --rm demo            # validate + dedup the bundled sample
+# docker compose run --rm demo --help
+# docker compose run --rm demo run /data/my-spec.yaml   (with ./data mounted below)
+services:
+  demo:
+    build: .
+    image: datasieve:dev
+    environment:
+      CURATOR_LOG_FORMAT: text
+      CURATOR_LOG_LEVEL: INFO
+    volumes:
+      # Drop your own JSONL files and specs into ./data on the host.
+      - ./data:/data:ro
+      - runs:/home/curator/runs
+    # Demo runs are quick; no ports, no network needed.
+    network_mode: none
+
+volumes:
+  runs:

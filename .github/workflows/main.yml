@@ -74,3 +74,15 @@ jobs:
           CODACY_ORGANIZATION_PROVIDER: gh
           CODACY_USERNAME: ChenghaoMou
           CODACY_PROJECT_NAME: text-dedup
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build the runtime image
+        run: docker build -t datasieve:ci .
+
+      - name: Run the demo pipeline in the image (no network)
+        run: docker run --rm --network none datasieve:ci

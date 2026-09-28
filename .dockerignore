@@ -1,0 +1,11 @@
+# Keep the build context to what the image needs (see Dockerfile).
+*
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!LICENSE
+!README.md
+!src/
+!examples/
+**/__pycache__/
+**/*.pyc
