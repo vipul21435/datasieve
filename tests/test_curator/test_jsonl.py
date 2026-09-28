@@ -41,7 +41,7 @@ def test_read_lines_rejects_a_directory(tmp_path: Path) -> None:
 
 def test_loads_strict_accepts_standard_json() -> None:
     assert loads_strict('{"a": {"b": [1, -2.5e3, true, null, "\\u00e9"]}}') == {
-        "a": {"b": [1, -2500.0, True, None, "é"]}
+        "a": {"b": [1, -2500.0, True, None, "\u00e9"]}
     }
 
 
@@ -67,9 +67,9 @@ def test_loads_strict_raises_decode_errors_for_malformed_json() -> None:
 
 
 def test_encode_json_line_keeps_non_ascii_text_readable() -> None:
-    line = encode_json_line({"text": "café 你好"})
-    assert line == '{"text": "café 你好"}\n'.encode()
-    assert json.loads(line) == {"text": "café 你好"}
+    line = encode_json_line({"text": "caf\u00e9 \u4f60\u597d"})
+    assert line == '{"text": "caf\u00e9 \u4f60\u597d"}\n'.encode()
+    assert json.loads(line) == {"text": "caf\u00e9 \u4f60\u597d"}
 
 
 def test_lone_surrogates_fail_strict_encoding_but_not_lossless_encoding() -> None:

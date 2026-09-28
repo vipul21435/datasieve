@@ -5,20 +5,113 @@ Training-data curation for SFT and preference (chosen/rejected) datasets, built 
 package is kept intact and reused for near-duplicate detection; the fork's own code lives in the
 new `curator` package. Everything runs on CPU and needs no paid API keys.
 
-> Status: tooling baseline. The package layout, CI and test setup are in place; the curation
-> stages (schema validation, PII scrubbing, quality filters, synthetic data, dataset cards, CLI
-> and API) land in follow-up changes.
+> Status: configuration, record schemas and the `validate` stage are in place (see
+> [Validating a dataset](#validating-a-dataset)). Near-dedup, PII scrubbing, quality filters,
+> synthetic data, dataset cards, the run ledger, the CLI and the HTTP API land in follow-up
+> changes.
 
 ## Repository layout
 
 | Path | Contents | Origin |
 | --- | --- | --- |
-| `src/curator/` | Curation pipeline | this fork |
+| `src/curator/` | Curation pipeline: `config/`, `schemas/`, `stages/`, `io/`, `errors.py`, `log.py` | this fork |
+| `examples/` | Example pipeline specs and small sample datasets with deliberate defects | this fork |
 | `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |
 | `benchmarks/`, `report/` | Dedup benchmarks and report app | upstream text-dedup |
 | `third_party/deduplicate-text-datasets` | Optional Rust suffix-array backend (git submodule) | Google Research |
 
 Both `curator` and `text_dedup` ship in the single `sft-data-curator` wheel.
+
+## Validating a dataset
+
+A run is described by a pipeline spec in YAML, TOML or JSON. Relative paths resolve against the
+spec file's directory, and unknown or duplicate keys are errors, so a typo cannot silently fall
+back to a default.
+
+```yaml
+# examples/sft-validate.yaml
+version: 1
+name: sft-demo
+input:
+  path: data/sft_sample.jsonl
+  kind: sft                    # sft | preference
+stages:
+  - stage: validate
+    unknown_fields: metadata   # reject (default) | metadata
+    max_invalid_fraction: 0.5  # fail the run if more than half of the records are rejected
+```
+
+There is no CLI yet, so run the stage from Python:
+
+```python
+from curator.config import load_settings, load_spec
+from curator.log import configure_logging
+from curator.stages.validate import run_validate
+
+settings = load_settings()
+configure_logging(settings.log_level, settings.log_format)
+spec = load_spec("examples/sft-validate.yaml")
+report = run_validate(
+    spec.input.path, spec.output_dir(settings.work_dir), kind=spec.input.kind, config=spec.stages[0]
+)
+print(report.to_dict())  # total 14, valid 8, rejected records per reason code
+```
+
+**Accepted records.** Each JSONL line is one record, with an optional `id` and a free-form
+`metadata` object:
+
+| Kind | Shape | Fields |
+| --- | --- | --- |
+| `sft` | chat | `messages`: `system` (first message only), then alternating `user` / `assistant` turns, ending with `assistant`; `tool` turns follow an assistant turn |
+| `sft` | prompt/response | `prompt`, `response`, optional `system` |
+| `preference` | text | `prompt`, `chosen`, `rejected`, optional `score_chosen` / `score_rejected` |
+| `preference` | chat | `prompt` (messages ending with a user turn), `chosen` / `rejected` (assistant continuations), optional scores |
+
+Validation is strict. Types are never coerced and text is never modified. A preference pair is
+rejected when `chosen` and `rejected` are identical apart from whitespace, or when `chosen` is
+scored below `rejected`. A record without an `id` gets a content hash as its id, which ignores
+metadata and scores and is the same for the chat and flat forms of an example. Exact duplicates
+are caught by that id.
+
+**Outputs.** `validated.jsonl` holds the valid records in their input shape, with `id` filled in.
+`quarantine.jsonl` has one entry per rejected line, listing every reason:
+
+```json
+{"line": 4, "id": "sft-004", "reasons": [{"code": "blank_text", "field": "messages[1].content", "message": "must contain non-whitespace text"}], "record": {"id": "sft-004", "messages": ["..."]}}
+```
+
+Reason codes are stable. They are pydantic's error types (`missing`, `extra_forbidden`,
+`literal_error`, ...), the schema rules (`blank_text`, `last_turn_not_assistant`,
+`consecutive_same_role`, `identical_responses`, `chosen_scored_below_rejected`, ...), or file-level
+checks (`invalid_json`, `invalid_encoding`, `duplicate_key`, `non_finite_number`,
+`invalid_unicode`, `duplicate_id`). Both files are written atomically, so a re-run produces
+byte-identical output. When the rejected fraction exceeds `max_invalid_fraction`, the stage
+raises `QuarantineThresholdError`. It still writes the quarantine file, but it withholds
+`validated.jsonl`.
+
+## Settings, logging and errors
+
+Runtime settings come from `CURATOR_*` environment variables or a `.env` file; see
+[`.env.example`](.env.example). Explicit arguments override environment variables, which override
+`.env`, which overrides the defaults. An unknown `CURATOR_*` variable is logged as a likely typo.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CURATOR_LOG_LEVEL` | `INFO` | Minimum log level |
+| `CURATOR_LOG_FORMAT` | `json` | `json` (one object per line on stderr) or `text` |
+| `CURATOR_WORK_DIR` | `.curator` | Output root; a spec without `output.dir` writes to `<work dir>/<name>` |
+
+With `json`, every log line is an event name plus fields, with context such as the current stage
+bound by `curator.log.log_context` (file paths left out here):
+
+```json
+{"ts":"2026-09-28T17:59:11.134Z","level":"info","logger":"curator.stages.validate","event":"validate.finished","stage":"validate","total":14,"valid":8,"invalid":6,"reasons":{"blank_text":1,"duplicate_id":2,"invalid_json":1,"last_turn_not_assistant":1,"literal_error":1}}
+```
+
+Every deliberate failure is a `curator.errors.CuratorError`. Each one has a stable `code`, a
+`to_dict()` for API bodies, and an exit code taken from `sysexits.h`. `ConfigError` (bad settings
+or spec) exits with 78, `DataError` (a rejected record, too many rejects) with 65, and
+`InputFileError` (missing input) with 66.
 
 ## Development
 
