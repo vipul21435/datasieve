@@ -1,0 +1,12 @@
+# Second batch: id "a" reused for new content (a same-id collision), batch 1's
+# "b" re-sent under the id "c" (skipped as seen, and a same-content collision),
+# and one genuinely new record.
+version: 1
+name: ledger-batch-2
+description: Three records, one already delivered by batch 1.
+input:
+  path: data/ledger_batch_2.jsonl
+  kind: sft
+stages:
+  - stage: validate
+  - stage: ledger

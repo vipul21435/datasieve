@@ -1,0 +1,11 @@
+# First of two batches through one run ledger (see ledger-batch-2.yaml). Run
+# both with the same --work-dir; the second skips the content this one delivered.
+version: 1
+name: ledger-batch-1
+description: Two records, both new to the ledger.
+input:
+  path: data/ledger_batch_1.jsonl
+  kind: sft
+stages:
+  - stage: validate
+  - stage: ledger

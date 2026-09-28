@@ -9,6 +9,7 @@ from curator.config import DedupStageSpec
 from curator.config import ValidateStageSpec
 from curator.config import load_settings
 from curator.config import load_spec
+from curator.ledger import Ledger
 from curator.pipeline import run_pipeline
 from curator.stages.dedup import DedupReport
 from curator.stages.validate import run_validate
@@ -114,3 +115,24 @@ def test_demo_data_is_reproducible() -> None:
     assert "".join(line + "\n" for line in train) == module.TRAIN_PATH.read_text(encoding="utf-8")
     assert "".join(line + "\n" for line in evaluation) == module.EVAL_PATH.read_text(encoding="utf-8")
     assert len(train) == 299 and len(evaluation) == 15
+
+
+def test_ledger_batch_examples_run_as_documented(tmp_path: Path) -> None:
+    """Two batches through one ledger: batch 2 skips batch 1's content and both collision kinds appear."""
+    work = tmp_path / "work"
+    first = run_pipeline(load_spec(EXAMPLES / "ledger-batch-1.yaml"), work_dir=work)
+    second = run_pipeline(load_spec(EXAMPLES / "ledger-batch-2.yaml"), work_dir=work)
+
+    ledger_1, ledger_2 = first.to_dict()["stages"][1], second.to_dict()["stages"][1]
+    assert (ledger_1["total"], ledger_1["kept"], ledger_1["new"]) == (2, 2, 2)
+    assert (ledger_2["total"], ledger_2["kept"], ledger_2["new"], ledger_2["dropped"]) == (3, 2, 2, 1)
+    assert ledger_2["reasons"] == {"seen": 1} and ledger_2["earlier_runs"] == {ledger_1["run_id"]: 1}
+    seen = json.loads((work / "ledger-batch-2" / "seen.jsonl").read_text())
+    assert (seen["line"], seen["id"], seen["action"], seen["seen_id"]) == (2, "c", "skipped", "b")
+    assert seen["seen_source"] == str(EXAMPLES / "data" / "ledger_batch_1.jsonl")
+    with Ledger.open_existing(work / "ledger.sqlite") as ledger:
+        stats = ledger.stats()
+        collisions = ledger.collisions()
+    assert (stats["runs"], stats["records"], stats["distinct_contents"], stats["distinct_ids"]) == (2, 5, 4, 4)
+    assert [(c.kind, c.key) for c in collisions] == [("same_id", "a"), ("same_content", collisions[1].key)]
+    assert [[m.record_id for m in c.members] for c in collisions] == [["a", "a"], ["b", "c"]]
