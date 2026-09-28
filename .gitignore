@@ -151,3 +151,6 @@ profile.json
 .DS_Store
 
 **/__pycache__
+
+# curator run outputs (CURATOR_WORK_DIR default)
+.curator/
