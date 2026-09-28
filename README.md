@@ -1,3 +1,5 @@
+Forked from https://github.com/ChenghaoMou/text-dedup.
+
 # sft-data-curator
 
 Training-data curation for SFT and preference (chosen/rejected) datasets, built as a fork of
@@ -5,16 +7,32 @@ Training-data curation for SFT and preference (chosen/rejected) datasets, built 
 package is kept intact and reused for near-duplicate detection; the fork's own code lives in the
 new `curator` package. Everything runs on CPU and needs no paid API keys.
 
-> Status: configuration, record schemas and the `validate` stage are in place (see
-> [Validating a dataset](#validating-a-dataset)). Near-dedup, PII scrubbing, quality filters,
-> synthetic data, dataset cards, the run ledger, the CLI and the HTTP API land in follow-up
-> changes.
+> Status: configuration, record schemas, the `validate` stage and the `dedup` stage are in place
+> and run end to end through `curator.pipeline` (see [Running a pipeline](#running-a-pipeline)).
+> PII scrubbing, quality filters, synthetic data, dataset cards, the run ledger, the CLI and the
+> HTTP API land in follow-up changes.
+
+## What I built on top
+
+- Typed configuration: `CURATOR_*` settings and a YAML/TOML/JSON pipeline spec where unknown or
+  duplicate keys are errors (`curator.config`).
+- Strict record schemas for SFT and preference data with stable reason codes (`curator.schemas`).
+- The `validate` stage: per-record reasons, a quarantine file, an invalid-fraction threshold and
+  atomic, re-run-stable outputs (`curator.stages.validate`).
+- JSON logging with bound context and an error hierarchy with `sysexits` codes (`curator.log`,
+  `curator.errors`).
+- The `dedup` stage: exact-hash dedup on normalised text, MinHash/LSH near-duplicate clustering
+  (keep-first, seeded, verified with the exact Jaccard similarity) and a contamination check
+  against a reference split; rejects carry a reason code, the matched id and the similarity
+  (`curator.stages.dedup`, `curator.dedup`).
+- A pipeline runner that chains the stages of a spec and summarises every stage
+  (`curator.pipeline`).
 
 ## Repository layout
 
 | Path | Contents | Origin |
 | --- | --- | --- |
-| `src/curator/` | Curation pipeline: `config/`, `schemas/`, `stages/`, `io/`, `errors.py`, `log.py` | this fork |
+| `src/curator/` | Curation pipeline: `config/`, `schemas/`, `stages/`, `dedup/`, `io/`, `pipeline.py`, `errors.py`, `log.py` | this fork |
 | `examples/` | Example pipeline specs and small sample datasets with deliberate defects | this fork |
 | `src/text_dedup/` | MinHash, SimHash, Bloom filter and suffix-array dedup | upstream text-dedup |
 | `benchmarks/`, `report/` | Dedup benchmarks and report app | upstream text-dedup |
@@ -41,7 +59,8 @@ stages:
     max_invalid_fraction: 0.5  # fail the run if more than half of the records are rejected
 ```
 
-There is no CLI yet, so run the stage from Python:
+There is no CLI yet, so run the spec from Python (see [Running a pipeline](#running-a-pipeline));
+a single stage can also be called directly:
 
 ```python
 from curator.config import load_settings, load_spec
@@ -89,6 +108,94 @@ byte-identical output. When the rejected fraction exceeds `max_invalid_fraction`
 raises `QuarantineThresholdError`. It still writes the quarantine file, but it withholds
 `validated.jsonl`.
 
+## Deduplicating a dataset
+
+The `dedup` stage runs after `validate` and removes duplicates keep-first: the first record of a
+group stays, later ones are dropped, and the output keeps the input's order. Every option with its
+default:
+
+```yaml
+stages:
+  - stage: validate
+  - stage: dedup
+    fields: [prompt, response]  # text fields to compare; default: every text field of the kind
+    normalize:                  # canonical form used for exact matching
+      lowercase: true
+      collapse_whitespace: true
+      strip_punctuation: false
+    hash: xxhash                # content hash of the normalised text: xxhash | sha256
+    near:
+      enabled: true
+      num_perm: 128             # MinHash signature length
+      ngram_size: 3             # word n-grams
+      threshold: 0.8            # Jaccard similarity at or above which the later record is a duplicate
+      seed: 42                  # same seed, same clusters
+    reference:                  # optional contamination check
+      path: data/eval.jsonl     # records matching this set are dropped
+      fields: [prompt]          # default: the stage's fields
+      threshold: 0.9            # default: near.threshold
+    output_file: deduped.jsonl
+    rejects_file: dedup_rejects.jsonl
+    clusters_file: dedup_clusters.jsonl
+```
+
+For each record the compared fields are normalised, joined with newlines (so field boundaries
+count) and checked in this order:
+
+1. `contaminated`: the text matches a record of `reference.path`, exactly or at
+   `reference.threshold`. Reference lines may be records of the pipeline's kind or plain objects
+   with the compared fields as strings; a line's id is its `id`, else `line:<number>`.
+2. `exact_duplicate`: the content hash of the normalised text was already kept. This also catches
+   the chat and prompt/response forms of one example, and copies that differ only in case,
+   whitespace or metadata.
+3. `near_duplicate`: a kept record's word n-gram set is at least `near.threshold` similar.
+   MinHash/LSH (upstream `text_dedup`'s 64-bit scheme and band split) proposes candidate pairs and
+   the exact Jaccard similarity decides, so the reported similarity is never an estimate. A pair
+   sitting right at the threshold is proposed with only even odds (the usual LSH S-curve), so set
+   the threshold a little below the similarity you want to catch.
+
+Groups are stars around the kept record: a record that resembles a dropped duplicate but not the
+kept one stays, and a copy of a contaminated record is contaminated too, since nothing of it was
+kept. Contaminated records are therefore not clustered.
+
+**Outputs.** `deduped.jsonl` holds the kept records unchanged. `dedup_rejects.jsonl` has one entry
+per dropped record with the id it matched (a kept record, or the reference record for
+`contaminated`); `dedup_clusters.jsonl` has one entry per kept record that had duplicates:
+
+```json
+{"line": 3, "id": "sft-103", "reason": "near_duplicate", "match": "sft-101", "similarity": 0.928571, "record": {"id": "sft-103", "prompt": "...", "response": "..."}}
+{"kept": "sft-101", "size": 4, "members": [{"id": "sft-102", "reason": "exact_duplicate", "similarity": 1.0}, {"id": "sft-103", "reason": "near_duplicate", "similarity": 0.928571}, {"id": "sft-104", "reason": "exact_duplicate", "similarity": 1.0}]}
+```
+
+All three files are written atomically, and two runs with the same seed produce byte-identical
+files. A line that is not a valid record raises `StageInputError` (run `validate` first), and an
+output that would overwrite the input or the reference file raises `ConfigError`.
+
+## Running a pipeline
+
+`curator.pipeline.run_pipeline` runs a spec's stages in order; each stage reads the previous
+stage's output, and every file lands in `output.dir` or `<CURATOR_WORK_DIR>/<name>`:
+
+```python
+from curator.config import load_settings, load_spec
+from curator.log import configure_logging
+from curator.pipeline import run_pipeline
+
+settings = load_settings()
+configure_logging(settings.log_level, settings.log_format)
+report = run_pipeline(load_spec("examples/sft-dedup.yaml"), work_dir=settings.work_dir)
+print(report.output_path)  # .curator/sft-dedup-demo/deduped.jsonl
+for stage in report.to_dict()["stages"]:
+    print(stage)
+```
+
+On [`examples/sft-dedup.yaml`](examples/sft-dedup.yaml) that prints two summaries: `validate`
+keeps 9 of 10 records (one blank response), and `dedup` keeps 3 of those 9, dropping three exact
+duplicates (an upper-cased copy, the chat form of the same example, and a copy that differs only
+in metadata), one near duplicate (0.93) and two records contaminated by the evaluation split (an
+exact copy and a one-word variant at 0.95). A stage that fails raises its `CuratorError`; earlier
+stages keep their files and later ones do not run.
+
 ## Settings, logging and errors
 
 Runtime settings come from `CURATOR_*` environment variables or a `.env` file; see
@@ -102,7 +209,8 @@ Runtime settings come from `CURATOR_*` environment variables or a `.env` file; s
 | `CURATOR_WORK_DIR` | `.curator` | Output root; a spec without `output.dir` writes to `<work dir>/<name>` |
 
 With `json`, every log line is an event name plus fields, with context such as the current stage
-bound by `curator.log.log_context` (file paths left out here):
+bound by `curator.log.log_context` (the pipeline runner also binds `pipeline`; file paths left
+out here):
 
 ```json
 {"ts":"2026-09-28T17:59:11.134Z","level":"info","logger":"curator.stages.validate","event":"validate.finished","stage":"validate","total":14,"valid":8,"invalid":6,"reasons":{"blank_text":1,"duplicate_id":2,"invalid_json":1,"last_turn_not_assistant":1,"literal_error":1}}
@@ -110,8 +218,8 @@ bound by `curator.log.log_context` (file paths left out here):
 
 Every deliberate failure is a `curator.errors.CuratorError`. Each one has a stable `code`, a
 `to_dict()` for API bodies, and an exit code taken from `sysexits.h`. `ConfigError` (bad settings
-or spec) exits with 78, `DataError` (a rejected record, too many rejects) with 65, and
-`InputFileError` (missing input) with 66.
+or spec) exits with 78, `DataError` (a rejected record, too many rejects, a stage input that is
+not a record) with 65, and `InputFileError` (missing input) with 66.
 
 ## Development
 
