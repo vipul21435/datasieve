@@ -32,6 +32,8 @@ def main(config: Config) -> None:
 
     timer = Timer()
     algo = cast(SuffixArrayAlgorithmConfig, config.algorithm)
+    # Check before creating any scratch directories inside the backend checkout.
+    algo.check_backend()
     cache_dir = Path(algo.google_repo_path) / algo.cache_dir
     temp_output_dir = Path(algo.google_repo_path) / "output"
     temp_dir = Path(algo.google_repo_path) / "tmp"

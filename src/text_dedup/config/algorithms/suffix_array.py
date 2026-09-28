@@ -1,5 +1,6 @@
 # pyright: reportAny=false
 # pyright: reportExplicitAny=false
+import shutil
 import subprocess
 from collections import deque
 from collections.abc import Generator
@@ -9,13 +10,48 @@ from typing import Literal
 
 from text_dedup.config.algorithms.base import AlgorithmConfig
 
+SUBMODULE_PATH = "third_party/deduplicate-text-datasets"
+# Files the suffix-array pipeline invokes inside `google_repo_path`.
+BACKEND_REQUIRED_FILES = ("scripts/make_suffix_array.py", "Cargo.toml")
+
+
+class SuffixArrayBackendError(RuntimeError):
+    """The optional Rust suffix-array backend (git submodule + cargo) is not available."""
+
 
 class SuffixArrayAlgorithmConfig(AlgorithmConfig):
     algo_name: Literal["suffix_array"] = "suffix_array"
     merge_strategy: Literal["longest", "overlapping"] = "longest"
     length_threshold: int = 100
-    google_repo_path: str = "third_party/deduplicate-text-datasets"
+    google_repo_path: str = SUBMODULE_PATH
     cache_dir: str = ".cache"
+
+    def check_backend(self) -> None:
+        """
+        Fail fast when the optional Rust backend is not set up.
+
+        The backend is Google's deduplicate-text-datasets, vendored as a git
+        submodule that a plain clone does not initialise, and it is driven via
+        ``cargo``. Nothing else in the package needs it, so it is checked here
+        rather than at install time.
+
+        Raises
+        ------
+        SuffixArrayBackendError
+            If a required backend file is missing or ``cargo`` is not on PATH.
+        """
+        repo = Path(self.google_repo_path)
+        missing = [name for name in BACKEND_REQUIRED_FILES if not (repo / name).is_file()]
+        if missing:
+            msg = (
+                f"Suffix-array backend not found at '{repo}' (missing: {', '.join(missing)}). "
+                f"Run `git submodule update --init {SUBMODULE_PATH}` or point "
+                "algorithm.google_repo_path at an existing checkout."
+            )
+            raise SuffixArrayBackendError(msg)
+        if shutil.which("cargo") is None:
+            msg = "`cargo` is not on PATH; the suffix-array backend needs a Rust toolchain (https://rustup.rs)."
+            raise SuffixArrayBackendError(msg)
 
     @staticmethod
     def merge_intervals(
