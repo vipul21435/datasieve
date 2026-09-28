@@ -100,6 +100,9 @@ extend_exclude = ["benchmarks"]
 DEP002 = ["gradio", "gradio-rangeslider", "plotly"]
 # scalene is conditionally imported for profiling
 DEP004 = ["scalene"]
+# pydantic_core is pydantic's own compiled core (pydantic pins its exact version);
+# its public error types such as PydanticCustomError are documented pydantic API.
+DEP003 = ["pydantic_core"]
 
 [tool.mypy]
 files = ["src"]
