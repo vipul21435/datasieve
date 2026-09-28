@@ -239,6 +239,7 @@ docker run --rm datasieve:dev                                   # the demo pipel
 docker run --rm datasieve:dev --help
 docker run --rm -v "$PWD/data:/data:ro" datasieve:dev run /data/my-spec.yaml
 docker compose run --rm demo                                    # same, via docker-compose.yml
+docker compose run --rm --entrypoint ls demo -l /home/curator/runs/sft-demo-300   # its output
 ```
 
 The image is `python:3.12-slim` pinned by digest, runs as the non-root user `curator`, installs
@@ -246,6 +247,11 @@ only the runtime dependencies from `uv.lock` and does not build the optional Rus
 backend. It is `linux/amd64` only: the upstream dependency `polars-grouper` publishes x86_64
 wheels but no aarch64 wheel, so an arm64 image would need a Rust toolchain; on Apple Silicon Docker
 runs it under emulation, which is fine for the demo and small datasets.
+
+Run output goes to `CURATOR_WORK_DIR`, which the image sets to `/home/curator/runs` and creates
+owned by `curator`, so a volume mounted there (compose's named volume `runs`, or
+`-v myruns:/home/curator/runs`) is writable by the non-root user. Compose also mounts `./data`
+read-only at `/data` for your own specs and JSONL files.
 
 ## Design decisions and tradeoffs
 
