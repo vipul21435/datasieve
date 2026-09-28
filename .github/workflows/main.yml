@@ -28,6 +28,19 @@ jobs:
       - name: Run checks
         run: just check
 
+      - name: Build wheel and check both packages ship
+        run: |
+          uv build --wheel -o dist
+          python - <<'EOF'
+          import glob
+          import zipfile
+
+          names = set(zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist())
+          for pkg in ("curator", "text_dedup"):
+              for member in ("__init__.py", "py.typed"):
+                  assert f"{pkg}/{member}" in names, f"{pkg}/{member} missing from wheel"
+          EOF
+
   tests-and-type-check:
     runs-on: ubuntu-latest
     strategy:
@@ -46,14 +59,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Run tests
-        run: uv run python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+      - name: Run tests (unit tests + src doctests)
+        run: uv run pytest --cov --cov-config=pyproject.toml --cov-report=xml
 
       - name: Check typing
         run: uv run mypy
 
+      # Codacy is wired to the upstream repository's secrets; skip it on forks.
       - name: Upload coverage reports to Codacy
-        if: ${{ matrix.python-version == '3.12' }}
+        if: ${{ matrix.python-version == '3.12' && github.repository == 'ChenghaoMou/text-dedup' }}
         run: bash <(curl -Ls https://coverage.codacy.com/get.sh) report -r coverage.xml
         env:
           CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
