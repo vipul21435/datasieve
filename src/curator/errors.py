@@ -15,6 +15,7 @@ failure classes apart:
         +-- RecordValidationError   one record fails its schema
         +-- QuarantineThresholdError too many records were quarantined
         +-- StageInputError         a stage's input file holds an unexpected line
+        +-- LedgerError             the run ledger file is not a usable SQLite database
 
 Each class carries a stable machine-readable ``code`` and a process
 ``exit_code`` (1 for the base class, otherwise taken from BSD ``sysexits.h``)
@@ -182,6 +183,16 @@ class StageInputError(DataError):
         self.path = path
 
 
+class LedgerError(DataError):
+    """The run ledger (see :mod:`curator.ledger`) exists but cannot be read or written as a SQLite database."""
+
+    code = "ledger_error"
+
+    def __init__(self, message: str, *, path: Path) -> None:
+        super().__init__(message, details={"path": str(path)})
+        self.path = path
+
+
 __all__ = [
     "EX_CONFIG",
     "EX_DATAERR",
@@ -191,6 +202,7 @@ __all__ = [
     "CuratorError",
     "DataError",
     "InputFileError",
+    "LedgerError",
     "QuarantineThresholdError",
     "RecordValidationError",
     "SettingsError",

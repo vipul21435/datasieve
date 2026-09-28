@@ -69,7 +69,8 @@ def _stage_line(summary: dict[str, object]) -> str:
     if stage == "validate":
         kept, dropped, verb = int(str(summary["valid"])), int(str(summary["invalid"])), "quarantined"
     else:
-        kept, dropped, verb = int(str(summary["kept"])), int(str(summary["dropped"])), "dropped"
+        verb = "skipped" if stage == "ledger" else "dropped"
+        kept, dropped = int(str(summary["kept"])), int(str(summary["dropped"]))
     reasons = summary.get("reasons")
     detail = (
         ", ".join(f"{code}={count}" for code, count in sorted(reasons.items())) if isinstance(reasons, dict) else ""

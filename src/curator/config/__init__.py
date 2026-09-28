@@ -4,6 +4,7 @@ from curator.config.settings import CuratorSettings
 from curator.config.settings import load_settings
 from curator.config.spec import DedupStageSpec
 from curator.config.spec import InputSpec
+from curator.config.spec import LedgerStageSpec
 from curator.config.spec import NearDuplicateSpec
 from curator.config.spec import NormalizeSpec
 from curator.config.spec import OutputSpec
@@ -18,6 +19,7 @@ __all__ = [
     "CuratorSettings",
     "DedupStageSpec",
     "InputSpec",
+    "LedgerStageSpec",
     "NearDuplicateSpec",
     "NormalizeSpec",
     "OutputSpec",

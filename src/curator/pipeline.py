@@ -22,12 +22,16 @@ from typing import Protocol
 from typing import assert_never
 
 from curator.config.spec import DedupStageSpec
+from curator.config.spec import LedgerStageSpec
 from curator.config.spec import PipelineSpec
 from curator.config.spec import StageSpec
 from curator.config.spec import ValidateStageSpec
+from curator.ledger import RunInfo
+from curator.ledger import new_run
 from curator.log import log_context
 from curator.schemas.parse import RecordKind
 from curator.stages.dedup import run_dedup
+from curator.stages.ledger import run_ledger
 from curator.stages.validate import run_validate
 
 logger = logging.getLogger(__name__)
@@ -42,12 +46,26 @@ class StageReport(Protocol):
     def to_dict(self) -> dict[str, object]: ...
 
 
-def run_stage(stage: StageSpec, input_path: Path, output_dir: Path, *, kind: RecordKind) -> StageReport:
-    """Run one stage on ``input_path``, writing its files into ``output_dir``."""
+def run_stage(
+    stage: StageSpec,
+    input_path: Path,
+    output_dir: Path,
+    *,
+    kind: RecordKind,
+    run: RunInfo | None = None,
+    work_dir: Path | None = None,
+) -> StageReport:
+    """Run one stage on ``input_path``, writing its files into ``output_dir``.
+
+    ``run`` and ``work_dir`` only matter to the ``ledger`` stage: the run it
+    records, and where its default ledger file lives.
+    """
     if isinstance(stage, ValidateStageSpec):
         return run_validate(input_path, output_dir, kind=kind, config=stage)
     if isinstance(stage, DedupStageSpec):
         return run_dedup(input_path, output_dir, kind=kind, config=stage)
+    if isinstance(stage, LedgerStageSpec):
+        return run_ledger(input_path, output_dir, kind=kind, config=stage, run=run, work_dir=work_dir)
     assert_never(stage)  # pragma: no cover - the StageSpec union is exhausted above
 
 
@@ -82,6 +100,9 @@ def run_pipeline(spec: PipelineSpec, *, work_dir: Path) -> PipelineReport:
     sets no ``output.dir``.
     """
     output_dir = spec.output_dir(work_dir)
+    run = None
+    if any(isinstance(stage, LedgerStageSpec) for stage in spec.stages):
+        run = new_run(spec.name, spec.input.path, spec.model_dump(mode="json"))
     with log_context(pipeline=spec.name):
         logger.info(
             "pipeline.started",
@@ -90,12 +111,13 @@ def run_pipeline(spec: PipelineSpec, *, work_dir: Path) -> PipelineReport:
                 "kind": spec.input.kind,
                 "output_dir": output_dir,
                 "stages": [stage.stage for stage in spec.stages],
+                "run_id": run.run_id if run is not None else None,
             },
         )
         reports: list[StageReport] = []
         current = spec.input.path
         for stage in spec.stages:
-            report = run_stage(stage, current, output_dir, kind=spec.input.kind)
+            report = run_stage(stage, current, output_dir, kind=spec.input.kind, run=run, work_dir=work_dir)
             reports.append(report)
             current = report.output_path
         result = PipelineReport(spec.name, spec.input.path, output_dir, tuple(reports))

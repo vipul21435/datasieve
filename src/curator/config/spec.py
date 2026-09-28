@@ -220,7 +220,42 @@ class DedupStageSpec(SpecModel):
         return self.fields_for(kind)
 
 
-StageSpec = Annotated[ValidateStageSpec | DedupStageSpec, Field(discriminator="stage")]
+class LedgerStageSpec(SpecModel):
+    """Cross-run bookkeeping: skip records an earlier run over other input already delivered.
+
+    Every record's content hash is looked up in a SQLite ledger (see
+    :mod:`curator.ledger`). New content is recorded and kept; content an
+    earlier run saw is reported in ``seen_file`` and is kept when that run
+    read the same input bytes (a re-run, so outputs stay byte-identical) or
+    skipped when it read a different input (an earlier batch).
+    """
+
+    stage: Literal["ledger"] = "ledger"
+
+    path: SpecPath | None = None
+    """The ledger file. Defaults to ``<CURATOR_WORK_DIR>/ledger.sqlite``, shared by every pipeline in it."""
+
+    fields: TextFields | None = None
+    """Text fields hashed as a record's content. Defaults to every text field of the record kind."""
+
+    normalize: NormalizeSpec = NormalizeSpec()
+    hash: HashAlgorithm = "xxhash"
+
+    output_file: FileName = "unseen.jsonl"
+    seen_file: FileName = "seen.jsonl"
+
+    @model_validator(mode="after")
+    def _distinct_files(self) -> Self:
+        if self.output_file == self.seen_file:
+            raise PydanticCustomError("same_file", "output_file and seen_file must be different files")
+        return self
+
+    def fields_for(self, kind: RecordKind) -> tuple[TextField, ...]:
+        """The fields that make up a record's content: ``fields``, or every text field of ``kind``."""
+        return tuple(self.fields) if self.fields is not None else TEXT_FIELDS[kind]
+
+
+StageSpec = Annotated[ValidateStageSpec | DedupStageSpec | LedgerStageSpec, Field(discriminator="stage")]
 """One entry of ``stages``, selected by its ``stage`` key."""
 
 
@@ -249,7 +284,7 @@ class PipelineSpec(SpecModel):
                 "duplicate_stage", "each stage may appear once; repeated: {stages}", {"stages": ", ".join(duplicates)}
             )
         for stage in self.stages:
-            if isinstance(stage, DedupStageSpec):
+            if isinstance(stage, DedupStageSpec | LedgerStageSpec):
                 self._check_text_fields(stage)
         self._check_distinct_files()
         return self
@@ -271,12 +306,12 @@ class PipelineSpec(SpecModel):
                     )
                 writers[value] = where
 
-    def _check_text_fields(self, stage: DedupStageSpec) -> None:
+    def _check_text_fields(self, stage: DedupStageSpec | LedgerStageSpec) -> None:
         allowed = TEXT_FIELDS[self.input.kind]
-        for where, fields in (
-            ("fields", stage.fields),
-            ("reference.fields", stage.reference and stage.reference.fields),
-        ):
+        listed: list[tuple[str, list[TextField] | None]] = [("fields", stage.fields)]
+        if isinstance(stage, DedupStageSpec) and stage.reference is not None:
+            listed.append(("reference.fields", stage.reference.fields))
+        for where, fields in listed:
             unknown = [field for field in fields or () if field not in allowed]
             if unknown:
                 raise PydanticCustomError(
@@ -398,6 +433,7 @@ __all__ = [
     "SPEC_VERSION",
     "DedupStageSpec",
     "InputSpec",
+    "LedgerStageSpec",
     "NearDuplicateSpec",
     "NormalizeSpec",
     "OutputSpec",
